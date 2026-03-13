@@ -106,9 +106,8 @@ function buildHtml(bg, inset, headline) {
 
   .inset-wrap {
     position: absolute;
-    top: 90px;
-    left: 50%;
-    transform: translateX(-50%);
+    top: 60px;
+    right: 40px;
     width: 300px;
     height: 300px;
     border-radius: 50%;
