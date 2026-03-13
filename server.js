@@ -24,7 +24,7 @@ app.post('/render', async (req, res) => {
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
     });
     const page = await browser.newPage();
-    await page.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
+    await page.setViewport({ width: 1080, height: 1350, deviceScaleFactor: 1 });
     await page.setContent(buildHtml(background_url, inset_url, headline), {
       waitUntil: 'networkidle0',
       timeout: 20000,
@@ -33,7 +33,6 @@ app.post('/render', async (req, res) => {
     await browser.close();
     browser = null;
 
-    // Upload to imgbb and return public URL
     const imageUrl = await uploadToImgbb(buffer, imgbbKey);
     res.json({ success: true, image_url: imageUrl });
   } catch (err) {
@@ -75,7 +74,7 @@ function buildHtml(bg, inset, headline) {
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@700&display=swap');
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 1080px; height: 1080px; overflow: hidden; background: #000; }
+  html, body { width: 1080px; height: 1350px; overflow: hidden; background: #000; }
 
   .bg {
     position: absolute;
@@ -87,18 +86,18 @@ function buildHtml(bg, inset, headline) {
   .overlay {
     position: absolute;
     bottom: 0; left: 0; right: 0;
-    height: 58%;
+    height: 60%;
     background: linear-gradient(to bottom, transparent 0%, rgba(0,0,0,0.97) 100%);
   }
 
   .handle {
     position: absolute;
-    bottom: 310px;
+    bottom: 420px;
     left: 50%;
     transform: translateX(-50%);
     color: rgba(255,255,255,0.85);
     font-family: 'Oswald', 'Arial Black', sans-serif;
-    font-size: 24px;
+    font-size: 26px;
     font-weight: 700;
     letter-spacing: 4px;
     text-shadow: 1px 1px 6px rgba(0,0,0,0.95);
@@ -107,14 +106,15 @@ function buildHtml(bg, inset, headline) {
 
   .inset-wrap {
     position: absolute;
-    top: 78px;
-    right: 28px;
-    width: 225px;
-    height: 225px;
+    top: 90px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 300px;
+    height: 300px;
     border-radius: 50%;
     overflow: hidden;
-    border: 4px solid rgba(255,255,255,0.92);
-    box-shadow: 0 6px 24px rgba(0,0,0,0.6);
+    border: 5px solid rgba(255,255,255,0.92);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.6);
   }
 
   .inset {
@@ -124,12 +124,12 @@ function buildHtml(bg, inset, headline) {
 
   .headline {
     position: absolute;
-    bottom: 38px;
+    bottom: 50px;
     left: 28px;
     right: 28px;
     color: #fff;
     font-family: 'Oswald', 'Arial Black', Impact, sans-serif;
-    font-size: 76px;
+    font-size: 90px;
     font-weight: 700;
     text-align: center;
     text-transform: uppercase;
