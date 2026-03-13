@@ -93,15 +93,15 @@ function buildHtml(bg, inset, headline) {
 
   .handle {
     position: absolute;
-    top: 32px;
+    bottom: 310px;
     left: 50%;
     transform: translateX(-50%);
-    color: #fff;
+    color: rgba(255,255,255,0.85);
     font-family: 'Oswald', 'Arial Black', sans-serif;
-    font-size: 30px;
+    font-size: 24px;
     font-weight: 700;
-    letter-spacing: 3px;
-    text-shadow: 2px 2px 6px rgba(0,0,0,0.85);
+    letter-spacing: 4px;
+    text-shadow: 1px 1px 6px rgba(0,0,0,0.95);
     white-space: nowrap;
   }
 
