@@ -278,7 +278,7 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
 </html>`;
   }
 
-  // template === 'slide' — clean split: light top / solid black bottom
+  // template === 'slide' — clean split: white top (full image) / solid black bottom
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -286,98 +286,79 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
 <style>
   ${fonts}
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 1080px; height: 1080px; overflow: hidden; background: #f5f2ee; display: flex; flex-direction: column; }
+  html, body { width: 1080px; height: 1080px; overflow: hidden; background: #fff; display: flex; flex-direction: column; }
 
-  /* TOP: image on light background */
+  /* TOP: full anatomy image on white, not cropped */
   .photo-section {
-    flex: 0 0 460px;
-    background: #f5f2ee;
+    flex: 0 0 420px;
+    background: #ffffff;
     display: flex;
     align-items: center;
     justify-content: center;
-    overflow: hidden;
     position: relative;
   }
 
   .photo-section img {
+    max-width: 100%;
+    max-height: 100%;
     width: 100%;
     height: 100%;
-    object-fit: cover;
+    object-fit: contain;
     object-position: center center;
   }
 
-  /* Slide number badge */
+  /* Slide number badge top-left */
   .slide-badge {
     position: absolute;
-    top: 18px;
-    left: 22px;
-    background: rgba(0,0,0,0.65);
+    top: 16px;
+    left: 20px;
+    background: #111;
     color: #4BB8D0;
     font-family: 'Bebas Neue', 'Oswald', sans-serif;
-    font-size: 36px;
-    letter-spacing: 2px;
-    padding: 4px 14px 2px 14px;
-    border-radius: 4px;
+    font-size: 32px;
+    letter-spacing: 3px;
+    padding: 5px 16px 3px;
+    border-radius: 3px;
   }
 
-  /* DIVIDER */
+  /* Thin teal divider line */
   .divider {
-    flex: 0 0 28px;
-    background: #000;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0;
-  }
-
-  .divider-line {
-    flex: 1;
-    height: 2px;
+    flex: 0 0 6px;
     background: #4BB8D0;
-    opacity: 0.7;
   }
 
-  .divider-icon {
-    width: 28px;
-    height: 28px;
-    margin: 0 10px;
-    color: #4BB8D0;
-    font-size: 22px;
-    line-height: 28px;
-    text-align: center;
-  }
-
-  /* BOTTOM: black content area */
+  /* BOTTOM: solid black with all the text */
   .content {
     flex: 1;
     background: #000;
-    padding: 28px 44px 32px 44px;
+    padding: 32px 48px 36px;
     display: flex;
     flex-direction: column;
     justify-content: center;
+    gap: 0;
   }
 
   .headline {
     color: #fff;
     font-family: 'Bebas Neue', 'Oswald', Impact, sans-serif;
-    font-size: 80px;
+    font-size: 86px;
     font-weight: 400;
     text-transform: uppercase;
-    line-height: 0.97;
-    letter-spacing: 1.5px;
+    line-height: 0.94;
+    letter-spacing: 2px;
     word-break: break-word;
-    margin-bottom: 22px;
+    margin-bottom: 28px;
   }
 
   .headline .kw { color: #4BB8D0; }
 
   .subtext {
-    color: rgba(255,255,255,0.8);
+    color: rgba(255,255,255,0.88);
     font-family: 'Oswald', Arial, sans-serif;
-    font-size: 30px;
+    font-size: 31px;
     font-weight: 400;
-    line-height: 1.5;
-    letter-spacing: 0.5px;
+    line-height: 1.55;
+    letter-spacing: 0.3px;
   }
 </style>
 </head>
@@ -386,11 +367,7 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
     <img src="${safe(imageUrl)}" crossorigin="anonymous">
     <div class="slide-badge">${numStr}</div>
   </div>
-  <div class="divider">
-    <div class="divider-line"></div>
-    <div class="divider-icon">◆</div>
-    <div class="divider-line"></div>
-  </div>
+  <div class="divider"></div>
   <div class="content">
     <div class="headline">${parseHeadline(headline)}</div>
     <div class="subtext">${parseSubtext(subtext)}</div>
