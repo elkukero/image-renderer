@@ -288,9 +288,9 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 1080px; height: 1080px; overflow: hidden; background: #fff; display: flex; flex-direction: column; }
 
-  /* TOP: full anatomy image on white, not cropped */
+  /* TOP: anatomy image on white, not cropped — smaller so text gets more space */
   .photo-section {
-    flex: 0 0 420px;
+    flex: 0 0 340px;
     background: #ffffff;
     display: flex;
     align-items: center;
@@ -299,8 +299,6 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
   }
 
   .photo-section img {
-    max-width: 100%;
-    max-height: 100%;
     width: 100%;
     height: 100%;
     object-fit: contain;
@@ -310,44 +308,44 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
   /* Slide number badge top-left */
   .slide-badge {
     position: absolute;
-    top: 16px;
-    left: 20px;
+    top: 14px;
+    left: 18px;
     background: #111;
     color: #4BB8D0;
     font-family: 'Bebas Neue', 'Oswald', sans-serif;
-    font-size: 32px;
+    font-size: 30px;
     letter-spacing: 3px;
-    padding: 5px 16px 3px;
+    padding: 4px 14px 2px;
     border-radius: 3px;
   }
 
-  /* Thin teal divider line */
+  /* Teal accent line */
   .divider {
-    flex: 0 0 6px;
+    flex: 0 0 5px;
     background: #4BB8D0;
   }
 
-  /* BOTTOM: solid black with all the text */
+  /* BOTTOM: big black content area — 735px */
   .content {
     flex: 1;
     background: #000;
-    padding: 32px 48px 36px;
+    padding: 26px 46px 28px;
     display: flex;
     flex-direction: column;
-    justify-content: center;
-    gap: 0;
+    justify-content: flex-start;
   }
 
   .headline {
     color: #fff;
     font-family: 'Bebas Neue', 'Oswald', Impact, sans-serif;
-    font-size: 86px;
+    font-size: 78px;
     font-weight: 400;
     text-transform: uppercase;
-    line-height: 0.94;
+    line-height: 0.93;
     letter-spacing: 2px;
     word-break: break-word;
-    margin-bottom: 28px;
+    margin-bottom: 22px;
+    flex-shrink: 0;
   }
 
   .headline .kw { color: #4BB8D0; }
@@ -355,10 +353,10 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
   .subtext {
     color: rgba(255,255,255,0.88);
     font-family: 'Oswald', Arial, sans-serif;
-    font-size: 31px;
+    font-size: 28px;
     font-weight: 400;
-    line-height: 1.55;
-    letter-spacing: 0.3px;
+    line-height: 1.6;
+    letter-spacing: 0.2px;
   }
 </style>
 </head>
