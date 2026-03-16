@@ -150,5 +150,202 @@ function buildHtml(bg, inset, headline) {
 </html>`;
 }
 
+app.post('/render-carousel', async (req, res) => {
+  const { image_url, headline, template, slide_number, subtext } = req.body;
+
+  if (!image_url || !headline || !template) {
+    return res.status(400).json({ error: 'Missing required fields: image_url, headline, template' });
+  }
+
+  const imgbbKey = process.env.IMGBB_API_KEY;
+  if (!imgbbKey) {
+    return res.status(500).json({ error: 'IMGBB_API_KEY environment variable not set' });
+  }
+
+  let browser;
+  try {
+    browser = await puppeteer.launch({
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    });
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
+    await page.setContent(buildCarouselHtml(image_url, headline, template, slide_number, subtext), {
+      waitUntil: 'networkidle0',
+      timeout: 20000,
+    });
+    const buffer = await page.screenshot({ type: 'png', fullPage: false });
+    await browser.close();
+    browser = null;
+
+    const imageUrl = await uploadToImgbb(buffer, imgbbKey);
+    res.json({ success: true, image_url: imageUrl });
+  } catch (err) {
+    console.error('Render carousel error:', err.message);
+    if (browser) await browser.close();
+    res.status(500).json({ error: err.message });
+  }
+});
+
+function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
+  const safe = (s) =>
+    String(s || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+
+  // Convert [[keyword]] markers to green spans
+  const parseHeadline = (text) =>
+    safe(text).replace(/\[\[(.+?)\]\]/g, '<span class="kw">$1</span>');
+
+  // Convert \n in subtext to <br>
+  const parseSubtext = (text) =>
+    safe(text || '').replace(/\\n/g, '<br>').replace(/\n/g, '<br>');
+
+  const numStr = String(slideNumber || 1).padStart(2, '0');
+
+  if (template === 'cover') {
+    return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@700&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1080px; height: 1080px; overflow: hidden; background: #000; }
+
+  .bg {
+    position: absolute;
+    width: 100%; height: 100%;
+    object-fit: cover;
+    opacity: 0.88;
+  }
+
+  .overlay {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 40%;
+    background: linear-gradient(to bottom, transparent 0%, rgba(0,0,0,0.97) 100%);
+  }
+
+  .headline {
+    position: absolute;
+    bottom: 120px;
+    left: 32px;
+    right: 32px;
+    color: #fff;
+    font-family: 'Oswald', 'Arial Black', Impact, sans-serif;
+    font-size: 88px;
+    font-weight: 700;
+    text-align: center;
+    text-transform: uppercase;
+    line-height: 1.05;
+    text-shadow: 3px 3px 10px rgba(0,0,0,0.95), 1px 1px 0 rgba(0,0,0,0.9);
+    word-break: break-word;
+  }
+
+  .headline .kw { color: #7FBF3E; }
+
+  .swipe {
+    position: absolute;
+    bottom: 40px;
+    right: 40px;
+    color: #7FBF3E;
+    font-family: 'Oswald', 'Arial Black', sans-serif;
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    text-shadow: 1px 1px 4px rgba(0,0,0,0.9);
+  }
+</style>
+</head>
+<body>
+  <img class="bg" src="${safe(imageUrl)}" crossorigin="anonymous">
+  <div class="overlay"></div>
+  <div class="headline">${parseHeadline(headline)}</div>
+  <div class="swipe">SWIPE →</div>
+</body>
+</html>`;
+  }
+
+  // template === 'slide'
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@400;700&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1080px; height: 1080px; overflow: hidden; background: #000; }
+
+  .photo {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 486px;
+    overflow: hidden;
+  }
+
+  .photo img {
+    width: 100%; height: 100%;
+    object-fit: cover;
+    object-position: center top;
+  }
+
+  .content {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 594px;
+    background: #000;
+    padding: 36px 40px 40px 40px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+  }
+
+  .slide-num {
+    font-family: 'Oswald', 'Arial Black', sans-serif;
+    font-size: 48px;
+    font-weight: 700;
+    color: #7FBF3E;
+    margin-bottom: 20px;
+    line-height: 1;
+  }
+
+  .headline {
+    color: #fff;
+    font-family: 'Oswald', 'Arial Black', Impact, sans-serif;
+    font-size: 62px;
+    font-weight: 700;
+    text-transform: uppercase;
+    line-height: 1.08;
+    text-shadow: 2px 2px 6px rgba(0,0,0,0.8);
+    word-break: break-word;
+    margin-bottom: 24px;
+  }
+
+  .headline .kw { color: #7FBF3E; }
+
+  .subtext {
+    color: rgba(255,255,255,0.85);
+    font-family: 'Oswald', Arial, sans-serif;
+    font-size: 28px;
+    font-weight: 400;
+    line-height: 1.55;
+  }
+</style>
+</head>
+<body>
+  <div class="photo">
+    <img src="${safe(imageUrl)}" crossorigin="anonymous">
+  </div>
+  <div class="content">
+    <div class="slide-num">${numStr}</div>
+    <div class="headline">${parseHeadline(headline)}</div>
+    <div class="subtext">${parseSubtext(subtext)}</div>
+  </div>
+</body>
+</html>`;
+}
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Image renderer running on port ${PORT}`));
