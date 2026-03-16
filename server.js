@@ -278,8 +278,7 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
 </html>`;
   }
 
-  // template === 'slide' — absolute positioning (reliable in Puppeteer)
-  // photo: 0-360px | teal line: 360-366px | black content: 366-1080px (714px)
+  // template === 'slide' — full-bleed image with gradient overlay (like cover, but with bullets)
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -287,24 +286,35 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
 <style>
   ${fonts}
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 1080px; height: 1080px; overflow: hidden; background: #000; position: relative; }
+  html, body { width: 1080px; height: 1080px; overflow: hidden; background: #000; }
 
-  .photo-wrap {
+  .bg {
     position: absolute;
-    top: 0; left: 0; width: 1080px; height: 360px;
-    background: #ffffff;
-    overflow: hidden;
+    width: 100%; height: 100%;
+    object-fit: cover;
+    object-position: center top;
+    opacity: 0.85;
   }
-  .photo-wrap img {
+
+  /* gradient: transparent top → solid black from 38% down */
+  .overlay {
     position: absolute;
-    top: 0; left: 0; width: 1080px; height: 360px;
-    object-fit: contain;
-    object-position: center center;
+    inset: 0;
+    background: linear-gradient(
+      to bottom,
+      transparent 0%,
+      transparent 28%,
+      rgba(0,0,0,0.55) 42%,
+      rgba(0,0,0,0.92) 56%,
+      #000 72%,
+      #000 100%
+    );
   }
+
   .badge {
     position: absolute;
-    top: 14px; left: 16px;
-    background: rgba(0,0,0,0.75);
+    top: 20px; left: 20px;
+    background: rgba(0,0,0,0.72);
     color: #4BB8D0;
     font-family: 'Bebas Neue', 'Oswald', sans-serif;
     font-size: 30px;
@@ -313,46 +323,40 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
     border-radius: 3px;
     z-index: 10;
   }
-  .accent {
+
+  .text-block {
     position: absolute;
-    top: 360px; left: 0; width: 1080px; height: 6px;
-    background: #4BB8D0;
+    bottom: 0; left: 0; right: 0;
+    padding: 0 44px 48px 44px;
   }
-  .content {
-    position: absolute;
-    top: 366px; left: 0; width: 1080px; bottom: 0;
-    background: #000;
-    padding: 28px 46px 24px 46px;
-    overflow: hidden;
-  }
+
   .headline {
     color: #fff;
     font-family: 'Bebas Neue', 'Oswald', Impact, sans-serif;
-    font-size: 74px;
+    font-size: 82px;
     font-weight: 400;
     text-transform: uppercase;
-    line-height: 0.92;
+    line-height: 0.94;
     letter-spacing: 2px;
     word-break: break-word;
-    margin-bottom: 22px;
+    margin-bottom: 20px;
   }
   .headline .kw { color: #4BB8D0; }
+
   .subtext {
-    color: rgba(255,255,255,0.88);
+    color: rgba(255,255,255,0.90);
     font-family: 'Oswald', Arial, sans-serif;
-    font-size: 27px;
+    font-size: 26px;
     font-weight: 400;
-    line-height: 1.6;
+    line-height: 1.55;
   }
 </style>
 </head>
 <body>
-  <div class="photo-wrap">
-    <img src="${safe(imageUrl)}" crossorigin="anonymous">
-    <div class="badge">${numStr}</div>
-  </div>
-  <div class="accent"></div>
-  <div class="content">
+  <img class="bg" src="${safe(imageUrl)}" crossorigin="anonymous">
+  <div class="overlay"></div>
+  <div class="badge">${numStr}</div>
+  <div class="text-block">
     <div class="headline">${parseHeadline(headline)}</div>
     <div class="subtext">${parseSubtext(subtext)}</div>
   </div>
