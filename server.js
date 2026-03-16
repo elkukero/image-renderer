@@ -67,6 +67,9 @@ function buildHtml(bg, inset, headline) {
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
 
+  const parseHeadline = (text) =>
+    safe(text).replace(/\[\[(.+?)\]\]/g, '<span class="kw">$1</span>');
+
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -136,6 +139,8 @@ function buildHtml(bg, inset, headline) {
     text-shadow: 3px 3px 8px rgba(0,0,0,0.95), 1px 1px 0 rgba(0,0,0,0.9);
     word-break: break-word;
   }
+
+  .headline .kw { color: #4BB8D0; }
 </style>
 </head>
 <body>
@@ -145,7 +150,7 @@ function buildHtml(bg, inset, headline) {
   <div class="inset-wrap">
     <img class="inset" src="${safe(inset)}" crossorigin="anonymous">
   </div>
-  <div class="headline">${safe(headline)}</div>
+  <div class="headline">${parseHeadline(headline)}</div>
 </body>
 </html>`;
 }
@@ -168,7 +173,7 @@ app.post('/render-carousel', async (req, res) => {
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
     });
     const page = await browser.newPage();
-    await page.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
+    await page.setViewport({ width: 1080, height: 1350, deviceScaleFactor: 1 });
     await page.setContent(buildCarouselHtml(image_url, headline, template, slide_number, subtext), {
       waitUntil: 'networkidle0',
       timeout: 20000,
@@ -212,7 +217,7 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
 <style>
   ${fonts}
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 1080px; height: 1080px; overflow: hidden; background: #000; }
+  html, body { width: 1080px; height: 1350px; overflow: hidden; background: #000; }
 
   .bg {
     position: absolute;
@@ -286,7 +291,7 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
 <style>
   ${fonts}
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 1080px; height: 1080px; overflow: hidden; background: #000; }
+  html, body { width: 1080px; height: 1350px; overflow: hidden; background: #000; }
 
   .bg {
     position: absolute;
