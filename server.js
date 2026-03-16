@@ -244,13 +244,13 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
     word-break: break-word;
   }
 
-  .headline .kw { color: #7FBF3E; }
+  .headline .kw { color: #4BB8D0; }
 
   .swipe {
     position: absolute;
     bottom: 40px;
     right: 40px;
-    color: #7FBF3E;
+    color: #4BB8D0;
     font-family: 'Oswald', 'Arial Black', sans-serif;
     font-size: 28px;
     font-weight: 700;
@@ -306,7 +306,7 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
     font-family: 'Oswald', 'Arial Black', sans-serif;
     font-size: 48px;
     font-weight: 700;
-    color: #7FBF3E;
+    color: #4BB8D0;
     margin-bottom: 20px;
     line-height: 1;
   }
@@ -323,7 +323,7 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
     margin-bottom: 24px;
   }
 
-  .headline .kw { color: #7FBF3E; }
+  .headline .kw { color: #4BB8D0; }
 
   .subtext {
     color: rgba(255,255,255,0.85);
