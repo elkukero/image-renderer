@@ -194,15 +194,15 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
 
-  // Convert [[keyword]] markers to green spans
   const parseHeadline = (text) =>
     safe(text).replace(/\[\[(.+?)\]\]/g, '<span class="kw">$1</span>');
 
-  // Convert \n in subtext to <br>
   const parseSubtext = (text) =>
     safe(text || '').replace(/\\n/g, '<br>').replace(/\n/g, '<br>');
 
   const numStr = String(slideNumber || 1).padStart(2, '0');
+
+  const fonts = `@import url('https://fonts.googleapis.com/css2?family=Oswald:wght@700&family=Bebas+Neue&display=swap');`;
 
   if (template === 'cover') {
     return `<!DOCTYPE html>
@@ -210,7 +210,7 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
 <head>
 <meta charset="utf-8">
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@700&display=swap');
+  ${fonts}
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 1080px; height: 1080px; overflow: hidden; background: #000; }
 
@@ -218,128 +218,180 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
     position: absolute;
     width: 100%; height: 100%;
     object-fit: cover;
-    opacity: 0.88;
+    opacity: 0.9;
   }
 
+  /* Strong gradient: transparent top → solid black bottom 50% */
   .overlay {
     position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      to bottom,
+      transparent 0%,
+      transparent 35%,
+      rgba(0,0,0,0.6) 52%,
+      rgba(0,0,0,0.97) 68%,
+      #000 100%
+    );
+  }
+
+  .text-block {
+    position: absolute;
     bottom: 0; left: 0; right: 0;
-    height: 40%;
-    background: linear-gradient(to bottom, transparent 0%, rgba(0,0,0,0.97) 100%);
+    padding: 0 44px 52px 44px;
+    text-align: center;
   }
 
   .headline {
-    position: absolute;
-    bottom: 120px;
-    left: 32px;
-    right: 32px;
     color: #fff;
-    font-family: 'Oswald', 'Arial Black', Impact, sans-serif;
-    font-size: 88px;
-    font-weight: 700;
-    text-align: center;
+    font-family: 'Bebas Neue', 'Oswald', Impact, sans-serif;
+    font-size: 110px;
+    font-weight: 400;
     text-transform: uppercase;
-    line-height: 1.05;
-    text-shadow: 3px 3px 10px rgba(0,0,0,0.95), 1px 1px 0 rgba(0,0,0,0.9);
+    line-height: 0.96;
+    letter-spacing: 2px;
     word-break: break-word;
   }
 
   .headline .kw { color: #4BB8D0; }
 
   .swipe {
-    position: absolute;
-    bottom: 40px;
-    right: 40px;
+    display: inline-block;
+    margin-top: 18px;
     color: #4BB8D0;
-    font-family: 'Oswald', 'Arial Black', sans-serif;
-    font-size: 28px;
+    font-family: 'Oswald', sans-serif;
+    font-size: 26px;
     font-weight: 700;
-    letter-spacing: 2px;
-    text-shadow: 1px 1px 4px rgba(0,0,0,0.9);
+    letter-spacing: 4px;
+    text-transform: uppercase;
   }
 </style>
 </head>
 <body>
   <img class="bg" src="${safe(imageUrl)}" crossorigin="anonymous">
   <div class="overlay"></div>
-  <div class="headline">${parseHeadline(headline)}</div>
-  <div class="swipe">SWIPE →</div>
+  <div class="text-block">
+    <div class="headline">${parseHeadline(headline)}</div>
+    <div class="swipe">SWIPE →</div>
+  </div>
 </body>
 </html>`;
   }
 
-  // template === 'slide'
+  // template === 'slide' — clean split: light top / solid black bottom
   return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@400;700&display=swap');
+  ${fonts}
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 1080px; height: 1080px; overflow: hidden; background: #000; }
+  html, body { width: 1080px; height: 1080px; overflow: hidden; background: #f5f2ee; display: flex; flex-direction: column; }
 
-  .photo {
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 486px;
+  /* TOP: image on light background */
+  .photo-section {
+    flex: 0 0 460px;
+    background: #f5f2ee;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     overflow: hidden;
+    position: relative;
   }
 
-  .photo img {
-    width: 100%; height: 100%;
+  .photo-section img {
+    width: 100%;
+    height: 100%;
     object-fit: cover;
-    object-position: center top;
+    object-position: center center;
   }
 
-  .content {
+  /* Slide number badge */
+  .slide-badge {
     position: absolute;
-    bottom: 0; left: 0; right: 0;
-    height: 594px;
+    top: 18px;
+    left: 22px;
+    background: rgba(0,0,0,0.65);
+    color: #4BB8D0;
+    font-family: 'Bebas Neue', 'Oswald', sans-serif;
+    font-size: 36px;
+    letter-spacing: 2px;
+    padding: 4px 14px 2px 14px;
+    border-radius: 4px;
+  }
+
+  /* DIVIDER */
+  .divider {
+    flex: 0 0 28px;
     background: #000;
-    padding: 36px 40px 40px 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+  }
+
+  .divider-line {
+    flex: 1;
+    height: 2px;
+    background: #4BB8D0;
+    opacity: 0.7;
+  }
+
+  .divider-icon {
+    width: 28px;
+    height: 28px;
+    margin: 0 10px;
+    color: #4BB8D0;
+    font-size: 22px;
+    line-height: 28px;
+    text-align: center;
+  }
+
+  /* BOTTOM: black content area */
+  .content {
+    flex: 1;
+    background: #000;
+    padding: 28px 44px 32px 44px;
     display: flex;
     flex-direction: column;
-    justify-content: flex-start;
-  }
-
-  .slide-num {
-    font-family: 'Oswald', 'Arial Black', sans-serif;
-    font-size: 48px;
-    font-weight: 700;
-    color: #4BB8D0;
-    margin-bottom: 20px;
-    line-height: 1;
+    justify-content: center;
   }
 
   .headline {
     color: #fff;
-    font-family: 'Oswald', 'Arial Black', Impact, sans-serif;
-    font-size: 62px;
-    font-weight: 700;
+    font-family: 'Bebas Neue', 'Oswald', Impact, sans-serif;
+    font-size: 80px;
+    font-weight: 400;
     text-transform: uppercase;
-    line-height: 1.08;
-    text-shadow: 2px 2px 6px rgba(0,0,0,0.8);
+    line-height: 0.97;
+    letter-spacing: 1.5px;
     word-break: break-word;
-    margin-bottom: 24px;
+    margin-bottom: 22px;
   }
 
   .headline .kw { color: #4BB8D0; }
 
   .subtext {
-    color: rgba(255,255,255,0.85);
+    color: rgba(255,255,255,0.8);
     font-family: 'Oswald', Arial, sans-serif;
-    font-size: 28px;
+    font-size: 30px;
     font-weight: 400;
-    line-height: 1.55;
+    line-height: 1.5;
+    letter-spacing: 0.5px;
   }
 </style>
 </head>
 <body>
-  <div class="photo">
+  <div class="photo-section">
     <img src="${safe(imageUrl)}" crossorigin="anonymous">
+    <div class="slide-badge">${numStr}</div>
+  </div>
+  <div class="divider">
+    <div class="divider-line"></div>
+    <div class="divider-icon">◆</div>
+    <div class="divider-line"></div>
   </div>
   <div class="content">
-    <div class="slide-num">${numStr}</div>
     <div class="headline">${parseHeadline(headline)}</div>
     <div class="subtext">${parseSubtext(subtext)}</div>
   </div>
