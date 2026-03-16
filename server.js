@@ -278,7 +278,8 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
 </html>`;
   }
 
-  // template === 'slide' — clean split: white top (full image) / solid black bottom
+  // template === 'slide' — absolute positioning (reliable in Puppeteer)
+  // photo: 0-360px | teal line: 360-366px | black content: 366-1080px (714px)
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -286,86 +287,71 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
 <style>
   ${fonts}
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 1080px; height: 1080px; overflow: hidden; background: #fff; display: flex; flex-direction: column; }
+  html, body { width: 1080px; height: 1080px; overflow: hidden; background: #000; position: relative; }
 
-  /* TOP: anatomy image on white, not cropped — smaller so text gets more space */
-  .photo-section {
-    flex: 0 0 340px;
+  .photo-wrap {
+    position: absolute;
+    top: 0; left: 0; width: 1080px; height: 360px;
     background: #ffffff;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    position: relative;
+    overflow: hidden;
   }
-
-  .photo-section img {
-    width: 100%;
-    height: 100%;
+  .photo-wrap img {
+    position: absolute;
+    top: 0; left: 0; width: 1080px; height: 360px;
     object-fit: contain;
     object-position: center center;
   }
-
-  /* Slide number badge top-left */
-  .slide-badge {
+  .badge {
     position: absolute;
-    top: 14px;
-    left: 18px;
-    background: #111;
+    top: 14px; left: 16px;
+    background: rgba(0,0,0,0.75);
     color: #4BB8D0;
     font-family: 'Bebas Neue', 'Oswald', sans-serif;
     font-size: 30px;
     letter-spacing: 3px;
     padding: 4px 14px 2px;
     border-radius: 3px;
+    z-index: 10;
   }
-
-  /* Teal accent line */
-  .divider {
-    flex: 0 0 5px;
+  .accent {
+    position: absolute;
+    top: 360px; left: 0; width: 1080px; height: 6px;
     background: #4BB8D0;
   }
-
-  /* BOTTOM: big black content area — 735px */
   .content {
-    flex: 1;
+    position: absolute;
+    top: 366px; left: 0; width: 1080px; bottom: 0;
     background: #000;
-    padding: 26px 46px 28px;
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-start;
+    padding: 28px 46px 24px 46px;
+    overflow: hidden;
   }
-
   .headline {
     color: #fff;
     font-family: 'Bebas Neue', 'Oswald', Impact, sans-serif;
-    font-size: 78px;
+    font-size: 74px;
     font-weight: 400;
     text-transform: uppercase;
-    line-height: 0.93;
+    line-height: 0.92;
     letter-spacing: 2px;
     word-break: break-word;
     margin-bottom: 22px;
-    flex-shrink: 0;
   }
-
   .headline .kw { color: #4BB8D0; }
-
   .subtext {
     color: rgba(255,255,255,0.88);
     font-family: 'Oswald', Arial, sans-serif;
-    font-size: 28px;
+    font-size: 27px;
     font-weight: 400;
     line-height: 1.6;
-    letter-spacing: 0.2px;
   }
 </style>
 </head>
 <body>
-  <div class="photo-section">
+  <div class="photo-wrap">
     <img src="${safe(imageUrl)}" crossorigin="anonymous">
-    <div class="slide-badge">${numStr}</div>
+    <div class="badge">${numStr}</div>
   </div>
-  <div class="divider"></div>
+  <div class="accent"></div>
   <div class="content">
     <div class="headline">${parseHeadline(headline)}</div>
     <div class="subtext">${parseSubtext(subtext)}</div>
