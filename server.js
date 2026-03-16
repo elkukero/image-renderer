@@ -29,7 +29,7 @@ app.post('/render', async (req, res) => {
       waitUntil: 'networkidle0',
       timeout: 20000,
     });
-    const buffer = await page.screenshot({ type: 'png', fullPage: false });
+    const buffer = await page.screenshot({ type: 'jpeg', quality: 85, fullPage: false });
     await browser.close();
     browser = null;
 
@@ -173,7 +173,7 @@ app.post('/render-carousel', async (req, res) => {
       waitUntil: 'networkidle0',
       timeout: 20000,
     });
-    const buffer = await page.screenshot({ type: 'png', fullPage: false });
+    const buffer = await page.screenshot({ type: 'jpeg', quality: 85, fullPage: false });
     await browser.close();
     browser = null;
 
@@ -292,7 +292,7 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
     position: absolute;
     width: 100%; height: 100%;
     object-fit: cover;
-    object-position: center top;
+    object-position: center center;
     opacity: 0.85;
   }
 
@@ -359,6 +359,128 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
   <div class="text-block">
     <div class="headline">${parseHeadline(headline)}</div>
     <div class="subtext">${parseSubtext(subtext)}</div>
+  </div>
+</body>
+</html>`;
+}
+
+app.post('/render-rebrand', async (req, res) => {
+  const { slide_image_url, slide_number, total_slides } = req.body;
+
+  if (!slide_image_url) {
+    return res.status(400).json({ error: 'Missing required field: slide_image_url' });
+  }
+
+  const imgbbKey = process.env.IMGBB_API_KEY;
+  if (!imgbbKey) {
+    return res.status(500).json({ error: 'IMGBB_API_KEY environment variable not set' });
+  }
+
+  let browser;
+  try {
+    browser = await puppeteer.launch({
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    });
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
+    await page.setContent(buildRebrandHtml(slide_image_url, slide_number || 1, total_slides || 1), {
+      waitUntil: 'networkidle0',
+      timeout: 20000,
+    });
+    const buffer = await page.screenshot({ type: 'jpeg', quality: 85, fullPage: false });
+    await browser.close();
+    browser = null;
+
+    const imageUrl = await uploadToImgbb(buffer, imgbbKey);
+    res.json({ success: true, image_url: imageUrl });
+  } catch (err) {
+    console.error('Render rebrand error:', err.message);
+    if (browser) await browser.close();
+    res.status(500).json({ error: err.message });
+  }
+});
+
+function buildRebrandHtml(slideImageUrl, slideNumber, totalSlides) {
+  const safe = (s) =>
+    String(s || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+
+  const numStr = `${slideNumber}/${totalSlides}`;
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@700;800&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1080px; height: 1080px; overflow: hidden; background: #07080f; }
+
+  .bg {
+    position: absolute;
+    width: 100%; height: 100%;
+    object-fit: cover;
+    object-position: center center;
+  }
+
+  /* Subtle dark gradient at bottom so badge area is always readable */
+  .overlay {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      to bottom,
+      rgba(7,8,15,0.18) 0%,
+      rgba(7,8,15,0) 40%,
+      rgba(7,8,15,0) 72%,
+      rgba(7,8,15,0.32) 100%
+    );
+  }
+
+  /* Top-right branded badge */
+  .badge {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: rgba(108,99,255,0.90);
+    backdrop-filter: blur(8px);
+    border-radius: 50px;
+    padding: 10px 18px 10px 16px;
+    box-shadow: 0 4px 20px rgba(108,99,255,0.45);
+  }
+
+  .badge-logo {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-weight: 800;
+    font-size: 22px;
+    letter-spacing: -0.03em;
+    line-height: 1;
+  }
+  .badge-logo .aima { color: #ffffff; }
+  .badge-logo .boosting { color: #00d4ff; }
+
+  .badge-counter {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-weight: 700;
+    font-size: 16px;
+    color: rgba(255,255,255,0.75);
+    letter-spacing: 0.02em;
+    border-left: 1px solid rgba(255,255,255,0.25);
+    padding-left: 10px;
+  }
+</style>
+</head>
+<body>
+  <img class="bg" src="${safe(slideImageUrl)}" crossorigin="anonymous">
+  <div class="overlay"></div>
+  <div class="badge">
+    <div class="badge-logo"><span class="aima">AIMA</span><span class="boosting">BOOSTING</span></div>
+    <div class="badge-counter">${safe(numStr)}</div>
   </div>
 </body>
 </html>`;
