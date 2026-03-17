@@ -381,6 +381,26 @@ app.post('/render-rebrand', async (req, res) => {
     return res.status(500).json({ error: 'IMGBB_API_KEY environment variable not set' });
   }
 
+  // Download the Instagram image server-side to avoid CDN blocking in Puppeteer
+  let imageDataUri;
+  try {
+    const imgResp = await fetch(slide_image_url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://www.instagram.com/',
+        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+      },
+    });
+    if (!imgResp.ok) throw new Error(`Image fetch failed: ${imgResp.status}`);
+    const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
+    const contentType = imgResp.headers.get('content-type') || 'image/jpeg';
+    imageDataUri = `data:${contentType};base64,${imgBuffer.toString('base64')}`;
+  } catch (fetchErr) {
+    console.error('Image fetch error:', fetchErr.message);
+    // Fallback: pass URL directly and hope Puppeteer can load it
+    imageDataUri = slide_image_url;
+  }
+
   let browser;
   try {
     browser = await puppeteer.launch({
@@ -388,9 +408,9 @@ app.post('/render-rebrand', async (req, res) => {
     });
     const page = await browser.newPage();
     await page.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
-    await page.setContent(buildRebrandHtml(slide_image_url, slide_number || 1, total_slides || 1), {
-      waitUntil: 'networkidle0',
-      timeout: 20000,
+    await page.setContent(buildRebrandHtml(imageDataUri, slide_number || 1, total_slides || 1), {
+      waitUntil: 'domcontentloaded',
+      timeout: 15000,
     });
     const buffer = await page.screenshot({ type: 'jpeg', quality: 85, fullPage: false });
     await browser.close();
