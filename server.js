@@ -425,6 +425,74 @@ app.post('/render-rebrand', async (req, res) => {
   }
 });
 
+app.post('/render-rebrand-batch', async (req, res) => {
+  const { slides } = req.body;
+
+  if (!Array.isArray(slides) || slides.length === 0) {
+    return res.status(400).json({ error: 'Missing required field: slides (array)' });
+  }
+
+  const imgbbKey = process.env.IMGBB_API_KEY;
+  if (!imgbbKey) {
+    return res.status(500).json({ error: 'IMGBB_API_KEY environment variable not set' });
+  }
+
+  let browser;
+  try {
+    browser = await puppeteer.launch({
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    });
+
+    const results = [];
+    for (const slide of slides) {
+      // Download image server-side to avoid Instagram CDN blocking in Puppeteer
+      let imageDataUri;
+      try {
+        const imgResp = await fetch(slide.slide_image_url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'https://www.instagram.com/',
+            'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+          },
+        });
+        if (!imgResp.ok) throw new Error(`Image fetch failed: ${imgResp.status}`);
+        const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
+        const contentType = imgResp.headers.get('content-type') || 'image/jpeg';
+        imageDataUri = `data:${contentType};base64,${imgBuffer.toString('base64')}`;
+      } catch (fetchErr) {
+        console.error('Batch image fetch error:', fetchErr.message);
+        imageDataUri = slide.slide_image_url;
+      }
+
+      const page = await browser.newPage();
+      await page.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
+      await page.setContent(buildRebrandHtml(imageDataUri, slide.slide_number || 1, slide.total_slides || 1), {
+        waitUntil: 'domcontentloaded',
+        timeout: 15000,
+      });
+      const buffer = await page.screenshot({ type: 'jpeg', quality: 85, fullPage: false });
+      await page.close();
+
+      const imageUrl = await uploadToImgbb(buffer, imgbbKey);
+      results.push({
+        image_url: imageUrl,
+        slide_number: slide.slide_number,
+        original_caption: slide.original_caption || '',
+        post_id: slide.post_id || '',
+        source_account: slide.source_account || '',
+      });
+    }
+
+    await browser.close();
+    browser = null;
+    res.json({ success: true, images: results });
+  } catch (err) {
+    console.error('Render rebrand batch error:', err.message);
+    if (browser) await browser.close();
+    res.status(500).json({ error: err.message });
+  }
+});
+
 function buildRebrandHtml(slideImageUrl, slideNumber, totalSlides) {
   const safe = (s) =>
     String(s || '')
