@@ -593,36 +593,41 @@ function buildSlideFromContent(data) {
   const hasBullets = Array.isArray(bullets) && bullets.length > 0;
   const hasStatNumber = stat_number && String(stat_number).trim();
   const hlText = headline || '';
+  // Content slides: moderate size
   const hlSize = hlText.length > 80 ? 34 : hlText.length > 60 ? 40 : hlText.length > 40 ? 48 : hlText.length > 20 ? 56 : 64;
+  // Cover slides: big impact font
+  const coverHlSize = hlText.length > 100 ? 64 : hlText.length > 80 ? 74 : hlText.length > 60 ? 84 : hlText.length > 40 ? 94 : hlText.length > 20 ? 106 : 116;
 
   const imgBgStyle = imageUrl ? `background-image:url('${imageUrl}');` : '';
   const showSplit = (has_image || false) && !!imageUrl;
 
   // ── Shared CSS ─────────────────────────────────────────────────────────────
   const baseCSS = `
+  @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Oswald:wght@700&display=swap');
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body {
     width:1080px; height:1080px; overflow:hidden; background:#07080f;
     font-family:system-ui,-apple-system,'Segoe UI',Arial,sans-serif; color:#fff;
   }
-  /* Cover: image fills slide, less blur so it's visible as actual content */
+  /* Cover: image fills slide — sharp, no blur */
   .photo-cover {
     position:absolute; inset:0;
     ${imgBgStyle}
     background-size:cover; background-position:center;
-    filter:blur(14px) saturate(1.2);
-    transform:scale(1.06);
+    filter:saturate(1.15) brightness(0.88);
+    transform:scale(1.01);
   }
-  /* Cover gradient: dark header strip at top + dark text bar at bottom */
+  /* Cover gradient: very light overlay at top, image shows clearly in the middle, dark at bottom 35% for text */
   .cover-gradient {
     position:absolute; inset:0;
     background:linear-gradient(180deg,
-      rgba(7,8,15,0.72) 0%,
-      rgba(7,8,15,0.30) 20%,
-      rgba(7,8,15,0.10) 42%,
-      rgba(7,8,15,0.55) 62%,
+      rgba(7,8,15,0.30) 0%,
+      rgba(7,8,15,0.05) 15%,
+      rgba(7,8,15,0.00) 38%,
+      rgba(7,8,15,0.00) 52%,
+      rgba(7,8,15,0.55) 65%,
       rgba(7,8,15,0.92) 78%,
-      rgba(7,8,15,0.97) 100%
+      rgba(7,8,15,1.00) 100%
     );
   }
   /* Split layout: image fills canvas, gradient reveals it only in the bottom 55% */
@@ -678,29 +683,39 @@ function buildSlideFromContent(data) {
   const decorNoGlow = `<div class="grid"></div><div class="topbar"></div><div class="bottombar"></div>${header}`;
   const decorFull = `<div class="grid"></div><div class="glow glow-1"></div><div class="glow glow-2"></div><div class="topbar"></div><div class="bottombar"></div>${header}`;
 
-  // ── COVER with image: image fills slide, text bar at bottom ───────────────
-  // Mimics airesearches cover: big image visible, dark gradient at bottom for text
+  // ── COVER with image: image fills slide, bold text bar at bottom ─────────
+  // Mimics airesearches cover: big sharp image + huge impactful text at bottom
   if (slide_type === 'cover' && imageUrl) {
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
   ${baseCSS}
   .cover-text {
-    position:absolute; bottom:0; left:0; right:0; padding:32px 52px 52px;
-    display:flex; flex-direction:column; gap:14px; z-index:5;
+    position:absolute; bottom:0; left:0; right:0; padding:28px 48px 48px;
+    display:flex; flex-direction:column; gap:10px; z-index:5;
   }
-  .cover-pill { display:inline-flex; align-self:flex-start; background:rgba(108,99,255,0.80); border-radius:40px; padding:7px 18px; font-size:12px; font-weight:700; color:#fff; letter-spacing:0.10em; text-transform:uppercase; }
-  .cover-hl { font-size:${hlSize}px; text-shadow:0 2px 12px rgba(0,0,0,0.8); }
-  .swipe { font-size:13px; font-weight:700; color:rgba(255,255,255,0.55); letter-spacing:0.12em; text-transform:uppercase; }
+  .cover-handle {
+    font-size:15px; font-weight:700; color:rgba(255,255,255,0.55);
+    letter-spacing:0.18em; text-transform:uppercase;
+  }
+  .cover-hl {
+    font-family:'Bebas Neue','Oswald',Impact,Arial,sans-serif;
+    font-size:${coverHlSize}px; font-weight:400; line-height:0.95;
+    text-transform:uppercase; letter-spacing:1px;
+    text-shadow:0 3px 20px rgba(0,0,0,0.9), 0 1px 4px rgba(0,0,0,1);
+    color:#fff;
+  }
+  .cover-sub { font-size:22px; font-weight:600; color:rgba(255,255,255,0.75); line-height:1.45; }
+  .swipe-row { display:flex; align-items:center; gap:12px; padding-top:6px; }
+  .swipe-line { flex:1; height:2px; background:linear-gradient(90deg,#6c63ff,#00d4ff); border-radius:1px; }
+  .swipe-txt { font-size:13px; font-weight:700; color:#6c63ff; letter-spacing:0.15em; text-transform:uppercase; white-space:nowrap; }
 </style></head><body>
   <div class="photo-cover"></div>
   <div class="cover-gradient"></div>
   ${decorNoGlow}
   <div class="cover-text">
-    <div class="cover-pill">@aimaboosting</div>
-    <div class="accent"></div>
-    ${headline ? `<h1 class="hl cover-hl">${esc(headline)}</h1>` : ''}
-    ${subheadline ? `<p class="sub">${esc(subheadline)}</p>` : ''}
-    ${body ? `<p class="body-text" style="font-size:19px">${esc(body)}</p>` : ''}
-    <div class="swipe">Desliza →</div>
+    <div class="cover-handle">@aimaboosting</div>
+    ${headline ? `<h1 class="cover-hl">${esc(headline)}</h1>` : ''}
+    ${subheadline ? `<p class="cover-sub">${esc(subheadline)}</p>` : ''}
+    <div class="swipe-row"><div class="swipe-line"></div><div class="swipe-txt">Desliza →</div></div>
   </div>
 </body></html>`;
   }
@@ -711,7 +726,7 @@ function buildSlideFromContent(data) {
   ${baseCSS}
   .cover-area { position:absolute; top:90px; left:56px; right:56px; bottom:44px; display:flex; flex-direction:column; justify-content:center; gap:24px; }
   .cover-pill { display:inline-flex; align-self:flex-start; background:rgba(108,99,255,0.18); border:1px solid rgba(108,99,255,0.5); border-radius:50px; padding:9px 22px; font-size:13px; font-weight:700; color:#6c63ff; letter-spacing:0.12em; text-transform:uppercase; }
-  .cover-hl { font-size:${hlSize}px; }
+  .cover-hl { font-family:'Bebas Neue','Oswald',Impact,Arial,sans-serif; font-size:${coverHlSize}px; font-weight:400; text-transform:uppercase; letter-spacing:1px; line-height:0.95; }
   .swipe { font-size:13px; font-weight:700; color:rgba(108,99,255,0.55); letter-spacing:0.14em; text-transform:uppercase; }
 </style></head><body>
   <div class="dark-bg"></div><div class="dark-overlay"></div>
@@ -719,7 +734,7 @@ function buildSlideFromContent(data) {
   <div class="cover-area">
     <div class="cover-pill">@aimaboosting</div>
     <div class="accent"></div>
-    ${headline ? `<h1 class="hl cover-hl">${esc(headline)}</h1>` : ''}
+    ${headline ? `<h1 class="cover-hl" style="color:#fff">${esc(headline)}</h1>` : ''}
     ${subheadline ? `<p class="sub">${esc(subheadline)}</p>` : ''}
     ${body ? `<p class="body-text">${esc(body)}</p>` : ''}
     <div class="swipe">Desliza →</div>
