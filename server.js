@@ -483,15 +483,20 @@ app.post('/render-rebrand-batch', async (req, res) => {
         }
       }
 
-      // 3. Build AIMABOOSTING branded slide — original image used as blurred bg only
+      // 3. Build AIMABOOSTING branded slide — URL passed directly so Puppeteer's browser
+      //    loads it (avoids server-side Instagram CDN blocks). Base64 is only for GPT Vision.
       const page = await browser.newPage();
       await page.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
+      await page.setExtraHTTPHeaders({
+        'Referer': 'https://www.instagram.com/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      });
       await page.setContent(buildSlideFromContent({
         ...extracted,
         slide_number: slide.slide_number || 1,
         total_slides: slide.total_slides || 1,
-        imageBase64: base64Image,
-      }), { waitUntil: 'domcontentloaded', timeout: 10000 });
+        imageUrl: slide.slide_image_url || null,
+      }), { waitUntil: 'networkidle2', timeout: 15000 });
       const buffer = await page.screenshot({ type: 'jpeg', quality: 85, fullPage: false });
       await page.close();
 
@@ -555,7 +560,7 @@ function buildSlideFromContent(data) {
     headline, subheadline, body, bullets,
     stat_number, stat_label,
     slide_number = 1, total_slides = 1,
-    imageBase64 = null,
+    imageUrl = null,
   } = data;
 
   const esc = (s) => String(s || '')
@@ -567,10 +572,10 @@ function buildSlideFromContent(data) {
   const hlText = headline || '';
   const hlSize = hlText.length > 80 ? 34 : hlText.length > 60 ? 40 : hlText.length > 40 ? 48 : hlText.length > 20 ? 58 : 68;
 
-  // Blurred background style — used for all layouts when an image is available.
-  // The heavy blur + dark overlay renders competitor text/logos completely invisible.
-  const bgStyle = imageBase64
-    ? `background-image:url('data:image/jpeg;base64,${imageBase64}');`
+  // Blurred background — Puppeteer's browser loads the URL directly (bypasses CDN blocks).
+  // Heavy blur + dark overlay hides all competitor text/logos; only mood/color remains.
+  const bgStyle = imageUrl
+    ? `background-image:url('${imageUrl}');`
     : '';
 
   const baseCSS = `
@@ -586,7 +591,7 @@ function buildSlideFromContent(data) {
     background-size:cover; background-position:center;
     filter:blur(22px) saturate(1.2);
     transform:scale(1.12);
-    opacity:${imageBase64 ? '0.30' : '0'};
+    opacity:${imageUrl ? '0.30' : '0'};
   }
   /* Heavy dark overlay — makes bg almost invisible, just mood/color */
   .dark-overlay {
