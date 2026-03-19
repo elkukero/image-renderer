@@ -551,9 +551,11 @@ async function extractSlideContent(base64Image, openaiKey) {
 }
 
 // buildSlideFromContent: creates AIMABOOSTING branded slides.
-// The original image is used ONLY as a blurred atmospheric background
-// (blur 22px + dark overlay 85%) so any competitor text/logos are invisible.
-// All visible content is generated from GPT-extracted text with AIMABOOSTING design.
+// Layout strategy:
+//   cover  → full-frame blurred bg (50% opacity), text centered
+//   content → SPLIT: dark top 42% (text) + blurred image bottom 58% (visible content)
+//   text   → full-frame blurred bg (40% opacity), text centered
+// The 20px blur makes all text/logos in the original image unreadable.
 function buildSlideFromContent(data) {
   const {
     slide_type = 'text',
@@ -570,35 +572,50 @@ function buildSlideFromContent(data) {
   const hasBullets = Array.isArray(bullets) && bullets.length > 0;
   const hasStatNumber = stat_number && String(stat_number).trim();
   const hlText = headline || '';
-  const hlSize = hlText.length > 80 ? 34 : hlText.length > 60 ? 40 : hlText.length > 40 ? 48 : hlText.length > 20 ? 58 : 68;
+  const hlSize = hlText.length > 80 ? 34 : hlText.length > 60 ? 40 : hlText.length > 40 ? 48 : hlText.length > 20 ? 56 : 64;
 
-  // Blurred background — Puppeteer's browser loads the URL directly (bypasses CDN blocks).
-  // Heavy blur + dark overlay hides all competitor text/logos; only mood/color remains.
-  const bgStyle = imageUrl
-    ? `background-image:url('${imageUrl}');`
-    : '';
+  const imgBgStyle = imageUrl ? `background-image:url('${imageUrl}');` : '';
 
+  // ── Shared CSS ─────────────────────────────────────────────────────────────
   const baseCSS = `
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body {
     width:1080px; height:1080px; overflow:hidden; background:#07080f;
     font-family:system-ui,-apple-system,'Segoe UI',Arial,sans-serif; color:#fff;
   }
-  /* Blurred atmospheric background — hides all competitor branding */
-  .photo-bg {
+  /* Full-frame blurred bg (cover / text types) */
+  .photo-bg-full {
     position:absolute; inset:0;
-    ${bgStyle}
+    ${imgBgStyle}
     background-size:cover; background-position:center;
-    filter:blur(22px) saturate(1.2);
+    filter:blur(22px) saturate(1.3);
     transform:scale(1.12);
-    opacity:${imageUrl ? '0.30' : '0'};
+    opacity:${imageUrl ? '0.50' : '0'};
   }
-  /* Heavy dark overlay — makes bg almost invisible, just mood/color */
+  /* Split layout: image fills whole canvas, gradient makes top dark */
+  .photo-bg-split {
+    position:absolute; inset:0;
+    ${imgBgStyle}
+    background-size:cover; background-position:center top;
+    filter:blur(18px) saturate(1.2);
+    transform:scale(1.08);
+  }
+  /* Gradient for split: fully dark at top, image reveals at bottom */
+  .split-gradient {
+    position:absolute; inset:0;
+    background:linear-gradient(180deg,
+      rgba(7,8,15,1.00)  0%,
+      rgba(7,8,15,1.00) 38%,
+      rgba(7,8,15,0.82) 52%,
+      rgba(7,8,15,0.45) 70%,
+      rgba(7,8,15,0.20) 100%
+    );
+  }
+  /* Full-frame dark overlay (cover / text types) */
   .dark-overlay {
     position:absolute; inset:0;
-    background:linear-gradient(150deg, rgba(7,8,15,0.88) 0%, rgba(7,8,15,0.92) 100%);
+    background:linear-gradient(150deg, rgba(7,8,15,0.78) 0%, rgba(7,8,15,0.82) 100%);
   }
-  /* Subtle grid */
   .grid {
     position:absolute; inset:0;
     background-image:
@@ -606,90 +623,42 @@ function buildSlideFromContent(data) {
       linear-gradient(90deg, rgba(108,99,255,0.05) 1px, transparent 1px);
     background-size:60px 60px;
   }
-  /* Ambient glows */
   .glow { position:absolute; border-radius:50%; filter:blur(90px); pointer-events:none; }
-  .glow-1 { width:520px; height:520px; background:rgba(108,99,255,0.22); top:-110px; right:-90px; }
-  .glow-2 { width:400px; height:400px; background:rgba(0,212,255,0.09); bottom:60px; left:-70px; }
-  /* Accent bars */
-  .topbar {
-    position:absolute; top:0; left:0; right:0; height:5px;
-    background:linear-gradient(90deg,#6c63ff,#00d4ff,#6c63ff);
-  }
-  .bottombar {
-    position:absolute; bottom:0; left:0; right:0; height:5px;
-    background:linear-gradient(90deg,#6c63ff,#00d4ff);
-  }
-  /* Header */
-  .header {
-    position:absolute; top:26px; left:46px; right:46px;
-    display:flex; align-items:center; justify-content:space-between;
-  }
+  .glow-1 { width:520px; height:520px; background:rgba(108,99,255,0.20); top:-110px; right:-90px; }
+  .glow-2 { width:400px; height:400px; background:rgba(0,212,255,0.08); bottom:60px; left:-70px; }
+  .topbar { position:absolute; top:0; left:0; right:0; height:5px; background:linear-gradient(90deg,#6c63ff,#00d4ff,#6c63ff); }
+  .bottombar { position:absolute; bottom:0; left:0; right:0; height:5px; background:linear-gradient(90deg,#6c63ff,#00d4ff); }
+  .header { position:absolute; top:26px; left:46px; right:46px; display:flex; align-items:center; justify-content:space-between; }
   .logo { font-size:25px; font-weight:900; letter-spacing:-0.04em; line-height:1; }
   .logo .aima { color:#fff; }
   .logo .boost { color:#6c63ff; }
   .counter { font-size:14px; font-weight:700; color:rgba(255,255,255,0.32); letter-spacing:0.08em; }
-  /* Shared content elements */
-  .accent {
-    width:50px; height:4px;
-    background:linear-gradient(90deg,#6c63ff,#00d4ff); border-radius:2px;
-  }
+  .accent { width:50px; height:4px; background:linear-gradient(90deg,#6c63ff,#00d4ff); border-radius:2px; }
   .hl { font-weight:900; color:#fff; line-height:1.1; letter-spacing:-0.03em; }
   .sub { font-size:22px; font-weight:600; color:#6c63ff; line-height:1.4; }
-  .body-text { font-size:23px; color:rgba(255,255,255,0.70); line-height:1.65; }
-  .bullets { list-style:none; display:flex; flex-direction:column; gap:16px; }
-  .bullets li {
-    display:flex; align-items:flex-start; gap:16px;
-    font-size:22px; color:rgba(255,255,255,0.82); line-height:1.45;
-  }
-  .bullets li::before {
-    content:''; display:block; min-width:10px; height:10px; border-radius:50%;
-    background:#6c63ff; box-shadow:0 0 10px rgba(108,99,255,0.7); margin-top:7px;
-  }
-  /* Stat */
-  .stat-num {
-    font-size:155px; font-weight:900; line-height:1;
-    background:linear-gradient(135deg,#6c63ff,#00d4ff);
-    -webkit-background-clip:text; -webkit-text-fill-color:transparent;
-    letter-spacing:-0.05em;
-  }
-  .stat-lbl { font-size:34px; font-weight:700; color:#fff; line-height:1.3; }
+  .body-text { font-size:22px; color:rgba(255,255,255,0.72); line-height:1.65; }
+  .bullets { list-style:none; display:flex; flex-direction:column; gap:14px; }
+  .bullets li { display:flex; align-items:flex-start; gap:16px; font-size:21px; color:rgba(255,255,255,0.82); line-height:1.45; }
+  .bullets li::before { content:''; display:block; min-width:10px; height:10px; border-radius:50%; background:#6c63ff; box-shadow:0 0 10px rgba(108,99,255,0.7); margin-top:7px; }
+  .stat-num { font-size:148px; font-weight:900; line-height:1; background:linear-gradient(135deg,#6c63ff,#00d4ff); -webkit-background-clip:text; -webkit-text-fill-color:transparent; letter-spacing:-0.05em; }
+  .stat-lbl { font-size:32px; font-weight:700; color:#fff; line-height:1.3; }
   .stat-body { font-size:20px; color:rgba(255,255,255,0.42); line-height:1.6; }`;
 
-  const bgHtml = `
-  <div class="photo-bg"></div>
-  <div class="dark-overlay"></div>
-  <div class="grid"></div>
-  <div class="glow glow-1"></div>
-  <div class="glow glow-2"></div>
-  <div class="topbar"></div>
-  <div class="bottombar"></div>
-  <div class="header">
-    <div class="logo"><span class="aima">AIMA</span><span class="boost">BOOSTING</span></div>
-    <div class="counter">${esc(counter)}</div>
-  </div>`;
+  const header = `<div class="header"><div class="logo"><span class="aima">AIMA</span><span class="boost">BOOSTING</span></div><div class="counter">${esc(counter)}</div></div>`;
+  const decorBase = `<div class="grid"></div><div class="glow glow-1"></div><div class="glow glow-2"></div><div class="topbar"></div><div class="bottombar"></div>${header}`;
 
-  // ── COVER: large hero headline, brand pill, swipe hint ────────────────────
+  // ── COVER: full-frame blurred bg, brand pill, swipe hint ──────────────────
   if (slide_type === 'cover') {
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
   ${baseCSS}
-  .cover-area {
-    position:absolute; top:100px; left:60px; right:60px; bottom:44px;
-    display:flex; flex-direction:column; justify-content:center; gap:28px;
-  }
-  .cover-pill {
-    display:inline-flex; align-self:flex-start;
-    background:rgba(108,99,255,0.18); border:1px solid rgba(108,99,255,0.5);
-    border-radius:50px; padding:9px 22px;
-    font-size:13px; font-weight:700; color:#6c63ff;
-    letter-spacing:0.12em; text-transform:uppercase;
-  }
+  .cover-area { position:absolute; top:100px; left:60px; right:60px; bottom:44px; display:flex; flex-direction:column; justify-content:center; gap:26px; }
+  .cover-pill { display:inline-flex; align-self:flex-start; background:rgba(108,99,255,0.18); border:1px solid rgba(108,99,255,0.5); border-radius:50px; padding:9px 22px; font-size:13px; font-weight:700; color:#6c63ff; letter-spacing:0.12em; text-transform:uppercase; }
   .cover-hl { font-size:${hlSize}px; }
-  .swipe {
-    font-size:13px; font-weight:700; color:rgba(108,99,255,0.60);
-    letter-spacing:0.14em; text-transform:uppercase; margin-top:8px;
-  }
+  .swipe { font-size:13px; font-weight:700; color:rgba(108,99,255,0.60); letter-spacing:0.14em; text-transform:uppercase; margin-top:6px; }
 </style></head><body>
-  ${bgHtml}
+  <div class="photo-bg-full"></div>
+  <div class="dark-overlay"></div>
+  ${decorBase}
   <div class="cover-area">
     <div class="cover-pill">@aimaboosting</div>
     <div class="accent"></div>
@@ -701,7 +670,8 @@ function buildSlideFromContent(data) {
 </body></html>`;
   }
 
-  // ── CONTENT: headline + text/bullets ─────────────────────────────────────
+  // ── CONTENT: split layout — dark top (text) + blurred image bottom ─────────
+  // Mimics the airesearches format: text on dark area at top, visual below.
   if (slide_type === 'content') {
     const bulletsHtml = hasBullets
       ? `<ul class="bullets">${bullets.map(b => `<li>${esc(b)}</li>`).join('')}</ul>`
@@ -710,13 +680,16 @@ function buildSlideFromContent(data) {
 
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
   ${baseCSS}
+  /* Text lives in the top 42% (fully dark zone) */
   .content-area {
-    position:absolute; top:100px; left:56px; right:56px; bottom:44px;
-    display:flex; flex-direction:column; justify-content:center; gap:22px;
+    position:absolute; top:80px; left:56px; right:56px; height:440px;
+    display:flex; flex-direction:column; justify-content:flex-end; gap:18px;
+    padding-bottom:28px;
   }
   .content-hl { font-size:${hlSize}px; }
 </style></head><body>
-  ${bgHtml}
+  ${imageUrl ? '<div class="photo-bg-split"></div><div class="split-gradient"></div>' : '<div class="dark-overlay"></div>'}
+  ${decorBase}
   <div class="content-area">
     <div class="accent"></div>
     ${headline ? `<h2 class="hl content-hl">${esc(headline)}</h2>` : ''}
@@ -726,7 +699,7 @@ function buildSlideFromContent(data) {
 </body></html>`;
   }
 
-  // ── TEXT / STAT (default) ─────────────────────────────────────────────────
+  // ── TEXT / STAT: full-frame blurred bg, text centered ─────────────────────
   let innerHtml = '';
   if (hasStatNumber) {
     innerHtml = `
@@ -747,12 +720,11 @@ function buildSlideFromContent(data) {
 
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
   ${baseCSS}
-  .text-area {
-    position:absolute; top:100px; left:64px; right:64px; bottom:44px;
-    display:flex; flex-direction:column; justify-content:center; gap:24px;
-  }
+  .text-area { position:absolute; top:100px; left:64px; right:64px; bottom:44px; display:flex; flex-direction:column; justify-content:center; gap:24px; }
 </style></head><body>
-  ${bgHtml}
+  <div class="photo-bg-full"></div>
+  <div class="dark-overlay"></div>
+  ${decorBase}
   <div class="text-area">
     ${innerHtml}
   </div>
