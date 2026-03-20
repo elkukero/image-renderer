@@ -495,6 +495,14 @@ app.post('/render-rebrand-batch', async (req, res) => {
         }
       }
 
+      // Caption fallback: if GPT Vision found no text, use original_caption
+      if (!extracted.headline && !extracted.body && !(extracted.bullets && extracted.bullets.length)) {
+        const caption = slide.original_caption || '';
+        const short = caption.length > 200 ? caption.slice(0, 200).replace(/\s\S*$/, '...') : caption;
+        extracted.body = short || null;
+        extracted.slide_type = extracted.slide_type || 'content';
+      }
+
       // 3. Build AIMABOOSTING branded slide — URL passed directly so Puppeteer's browser
       //    loads it (avoids server-side Instagram CDN blocks). Base64 is only for GPT Vision.
       const page = await browser.newPage();
@@ -503,11 +511,13 @@ app.post('/render-rebrand-batch', async (req, res) => {
         'Referer': 'https://www.instagram.com/',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       });
+      // Use base64 data URI so Puppeteer browser doesn't need to fetch Instagram CDN
+      const imageUrl = base64Image ? `data:image/jpeg;base64,${base64Image}` : null;
       await page.setContent(buildSlideFromContent({
         ...extracted,
         slide_number: slide.slide_number || 1,
         total_slides: slide.total_slides || 1,
-        imageUrl: slide.slide_image_url || null,
+        imageUrl,
         has_image: extracted.has_image || false,
       }), { waitUntil: 'networkidle2', timeout: 15000 });
       const buffer = await page.screenshot({ type: 'jpeg', quality: 85, fullPage: false });
