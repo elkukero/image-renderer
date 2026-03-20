@@ -512,12 +512,12 @@ app.post('/render-rebrand-batch', async (req, res) => {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       });
       // Use base64 data URI so Puppeteer browser doesn't need to fetch Instagram CDN
-      const imageUrl = base64Image ? `data:image/jpeg;base64,${base64Image}` : null;
+      const bgDataUri = base64Image ? `data:image/jpeg;base64,${base64Image}` : null;
       await page.setContent(buildSlideFromContent({
         ...extracted,
         slide_number: slide.slide_number || 1,
         total_slides: slide.total_slides || 1,
-        imageUrl,
+        imageUrl: bgDataUri,
         has_image: extracted.has_image || false,
       }), { waitUntil: 'networkidle2', timeout: 15000 });
       const buffer = await page.screenshot({ type: 'jpeg', quality: 85, fullPage: false });
