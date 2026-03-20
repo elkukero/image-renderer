@@ -441,11 +441,29 @@ app.post('/render-rebrand-batch', async (req, res) => {
 
     const results = [];
     for (const slide of slides) {
-      // Video slides: pass through original URL without rendering
+      // Video slides: detect watermark position, pass through video URL
       if (slide.is_video) {
+        let watermarkGravity = 'north_west';
+        let base64Thumb = null;
+        try {
+          const thumbResp = await fetch(slide.slide_image_url, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Referer': 'https://www.instagram.com/',
+            },
+          });
+          if (thumbResp.ok) base64Thumb = Buffer.from(await thumbResp.arrayBuffer()).toString('base64');
+        } catch (e) { console.error('Thumb download error:', e.message); }
+
+        if (base64Thumb) {
+          try { watermarkGravity = await detectWatermarkPosition(base64Thumb, openaiKey); }
+          catch (e) { console.error('Watermark detection error:', e.message); }
+        }
+
         results.push({
           image_url: slide.slide_image_url,
           is_video: true,
+          watermark_gravity: watermarkGravity,
           slide_number: slide.slide_number,
           original_caption: slide.original_caption || '',
           post_id: slide.post_id || '',
@@ -522,6 +540,31 @@ app.post('/render-rebrand-batch', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+async function detectWatermarkPosition(base64Image, openaiKey) {
+  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openaiKey}` },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      max_tokens: 20,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: 'Where is the account branding, logo, or @handle watermark in this image? Return ONLY one word: north_west, north_east, south_west, or south_east. If unclear, return north_west.',
+          },
+          { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64Image}`, detail: 'low' } },
+        ],
+      }],
+    }),
+  });
+  const data = await resp.json();
+  const raw = (data.choices?.[0]?.message?.content || 'north_west').toLowerCase().trim().replace(/[^a-z_]/g, '');
+  const valid = ['north_west', 'north_east', 'south_west', 'south_east'];
+  return valid.includes(raw) ? raw : 'north_west';
+}
 
 async function extractSlideContent(base64Image, openaiKey) {
   const resp = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -634,18 +677,18 @@ function buildSlideFromContent(data) {
   .photo-split {
     position:absolute; inset:0;
     ${imgBgStyle}
-    background-size:cover; background-position:center top;
-    filter:blur(16px) saturate(1.2);
-    transform:scale(1.07);
+    background-size:cover; background-position:center center;
+    filter:blur(4px) brightness(0.75) saturate(1.1);
+    transform:scale(1.03);
   }
   .split-gradient {
     position:absolute; inset:0;
     background:linear-gradient(180deg,
       rgba(7,8,15,1.00)  0%,
-      rgba(7,8,15,1.00) 40%,
-      rgba(7,8,15,0.80) 54%,
-      rgba(7,8,15,0.38) 72%,
-      rgba(7,8,15,0.18) 100%
+      rgba(7,8,15,1.00) 42%,
+      rgba(7,8,15,0.70) 55%,
+      rgba(7,8,15,0.25) 75%,
+      rgba(7,8,15,0.10) 100%
     );
   }
   /* Plain dark bg (no image) */
