@@ -1,5 +1,12 @@
 const express = require('express');
 const puppeteer = require('puppeteer');
+const ffmpeg = require('fluent-ffmpeg');
+const ffmpegPath = require('ffmpeg-static');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+ffmpeg.setFfmpegPath(ffmpegPath);
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -441,38 +448,27 @@ app.post('/render-rebrand-batch', async (req, res) => {
 
     const results = [];
     for (const slide of slides) {
-      // Video slides: detect watermark position, pass through video URL
-      if (slide.is_video) {
-        let watermarkGravity = 'north_west';
-        let base64Thumb = null;
+      // Video slides: FFmpeg processing — rebrand the actual video
+      if (slide.is_video && slide.slide_video_url) {
         try {
-          const thumbResp = await fetch(slide.slide_image_url, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-              'Referer': 'https://www.instagram.com/',
-            },
+          const result = await processVideoSlide(slide, openaiKey, browser);
+          results.push(result);
+        } catch (e) {
+          console.error('Video processing error:', e.message);
+          // Fallback: render thumbnail as branded image
+          results.push({
+            image_url: slide.slide_image_url,
+            is_video: false,
+            slide_number: slide.slide_number,
+            original_caption: slide.original_caption || '',
+            post_id: slide.post_id || '',
+            source_account: slide.source_account || '',
           });
-          if (thumbResp.ok) base64Thumb = Buffer.from(await thumbResp.arrayBuffer()).toString('base64');
-        } catch (e) { console.error('Thumb download error:', e.message); }
-
-        if (base64Thumb) {
-          try { watermarkGravity = await detectWatermarkPosition(base64Thumb, openaiKey); }
-          catch (e) { console.error('Watermark detection error:', e.message); }
         }
-
-        results.push({
-          image_url: slide.slide_image_url,
-          is_video: true,
-          watermark_gravity: watermarkGravity,
-          slide_number: slide.slide_number,
-          original_caption: slide.original_caption || '',
-          post_id: slide.post_id || '',
-          source_account: slide.source_account || '',
-        });
         continue;
       }
 
-      // 1. Download image as base64
+      // 1. Download image/video-thumbnail as base64
       let base64Image = null;
       try {
         const imgResp = await fetch(slide.slide_image_url, {
@@ -519,7 +515,7 @@ app.post('/render-rebrand-batch', async (req, res) => {
       const buffer = await page.screenshot({ type: 'jpeg', quality: 85, fullPage: false });
       await page.close();
 
-      // 4. Upload
+      // 4. Upload — always as image (video slides are re-rendered as branded images)
       const imageUrl = await uploadToImgbb(buffer, imgbbKey);
       results.push({
         image_url: imageUrl,
@@ -540,6 +536,194 @@ app.post('/render-rebrand-batch', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+async function processVideoSlide(slide, openaiKey, sharedBrowser) {
+  const tag = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const videoPath = path.join(os.tmpdir(), `vid_${tag}.mp4`);
+  const overlayPath = path.join(os.tmpdir(), `ovl_${tag}.png`);
+  const outputPath = path.join(os.tmpdir(), `out_${tag}.mp4`);
+  const cleanup = () => [videoPath, overlayPath, outputPath].forEach(f => { try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (_) {} });
+
+  try {
+    // 1. Download thumbnail for GPT Vision extraction
+    let base64Thumb = null;
+    try {
+      const r = await fetch(slide.slide_image_url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.instagram.com/' } });
+      if (r.ok) base64Thumb = Buffer.from(await r.arrayBuffer()).toString('base64');
+    } catch (e) { console.error('Thumb dl error:', e.message); }
+
+    // 2. Extract text content from thumbnail
+    let extracted = { slide_type: 'content', has_image: true, headline: null, body: null, bullets: null };
+    if (base64Thumb) {
+      try { extracted = await extractSlideContent(base64Thumb, openaiKey); } catch (e) { console.error('Vision error:', e.message); }
+    }
+
+    // 3. Download actual video
+    const vr = await fetch(slide.slide_video_url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.instagram.com/' } });
+    if (!vr.ok) throw new Error(`Video download failed: ${vr.status}`);
+    fs.writeFileSync(videoPath, Buffer.from(await vr.arrayBuffer()));
+
+    // 4. Get video dimensions via ffprobe
+    const dims = await new Promise((resolve) => {
+      ffmpeg.ffprobe(videoPath, (err, meta) => {
+        if (err) return resolve({ width: 1080, height: 1080 });
+        const vs = (meta.streams || []).find(s => s.codec_type === 'video') || {};
+        resolve({ width: vs.width || 1080, height: vs.height || 1080 });
+      });
+    });
+
+    // 5. Render AIMABOOSTING overlay PNG via Puppeteer
+    const page = await sharedBrowser.newPage();
+    await page.setViewport({ width: dims.width, height: dims.height, deviceScaleFactor: 1 });
+    await page.setContent(buildVideoOverlayHtml({ ...extracted, slide_number: slide.slide_number, total_slides: slide.total_slides, width: dims.width, height: dims.height }), { waitUntil: 'networkidle2', timeout: 15000 });
+    const overlayBuf = await page.screenshot({ type: 'png', omitBackground: true, fullPage: false });
+    await page.close();
+    fs.writeFileSync(overlayPath, overlayBuf);
+
+    // 6. FFmpeg: composite AIMABOOSTING overlay on original video
+    await new Promise((resolve, reject) => {
+      ffmpeg(videoPath)
+        .input(overlayPath)
+        .complexFilter('[0:v][1:v]overlay=0:0[outv]')
+        .outputOptions(['-map [outv]', '-map 0:a?', '-c:v libx264', '-c:a copy', '-preset fast', '-crf 23', '-movflags +faststart'])
+        .output(outputPath)
+        .on('end', resolve)
+        .on('error', reject)
+        .run();
+    });
+
+    // 7. Upload processed video to Cloudinary
+    const cloudinaryUrl = await uploadVideoToCloudinary(fs.readFileSync(outputPath));
+    cleanup();
+
+    return {
+      image_url: cloudinaryUrl,
+      is_video: true,
+      already_cloudinary: true,
+      slide_number: slide.slide_number,
+      original_caption: slide.original_caption || '',
+      post_id: slide.post_id || '',
+      source_account: slide.source_account || '',
+    };
+  } catch (e) {
+    cleanup();
+    throw e;
+  }
+}
+
+async function uploadVideoToCloudinary(videoBuffer) {
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME || 'drg0uit7h';
+  const preset = process.env.CLOUDINARY_UPLOAD_PRESET || 'ml_default';
+  const base64 = videoBuffer.toString('base64');
+  const body = new URLSearchParams({ file: `data:video/mp4;base64,${base64}`, upload_preset: preset });
+  const resp = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/video/upload`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  });
+  const data = await resp.json();
+  if (!data.secure_url) throw new Error(`Cloudinary video upload failed: ${JSON.stringify(data.error || data)}`);
+  return data.secure_url;
+}
+
+function buildVideoOverlayHtml(data) {
+  const { headline, subheadline, body, bullets, layout = 'text_top', slide_number = 1, total_slides = 1, width = 1080, height = 1080 } = data;
+  const esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const counter = `${slide_number}/${total_slides}`;
+  const hlText = headline || '';
+  const hlSize = hlText.length > 80 ? 26 : hlText.length > 60 ? 30 : hlText.length > 40 ? 36 : hlText.length > 20 ? 42 : 48;
+  const hasBullets = Array.isArray(bullets) && bullets.length > 0;
+
+  // Determine overlay zone based on detected layout
+  // text_top: our branding covers the top ~55%
+  // text_bottom: our branding covers the bottom ~55%
+  // text_full: full overlay (pure text slide, no visual area)
+  // visual_full: thin bars top+bottom only
+  const isBottom = layout === 'text_bottom';
+  const isFull = layout === 'text_full';
+  const isThin = layout === 'visual_full';
+
+  const overlayPct = isFull ? 1.0 : isThin ? 0 : 0.55;
+  const overlayH = Math.round(height * overlayPct);
+  const thinBarH = Math.round(height * 0.12); // for visual_full: small bars only
+
+  if (isThin) {
+    // Two thin bars: top + bottom
+    overlayCSS = `
+  .bar-top { position:absolute; top:0; left:0; width:100%; height:${thinBarH}px; background:linear-gradient(180deg,#07080f 0%,#07080f 70%,rgba(7,8,15,0) 100%); }
+  .bar-bottom { position:absolute; bottom:0; left:0; width:100%; height:${thinBarH}px; background:linear-gradient(0deg,#07080f 0%,#07080f 70%,rgba(7,8,15,0) 100%); }`;
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:${width}px; height:${height}px; background:transparent; overflow:hidden; font-family:system-ui,-apple-system,Arial,sans-serif; color:#fff; }
+  ${overlayCSS}
+  .topbar { position:absolute; top:0; left:0; right:0; height:4px; background:linear-gradient(90deg,#6c63ff,#00d4ff,#6c63ff); }
+  .header { position:absolute; top:10px; left:36px; right:36px; display:flex; align-items:center; justify-content:space-between; }
+  .logo { font-size:20px; font-weight:900; letter-spacing:-0.04em; }
+  .logo .aima { color:#fff; } .logo .boost { color:#6c63ff; }
+  .counter { font-size:12px; font-weight:700; color:rgba(255,255,255,0.35); letter-spacing:0.08em; }
+  .bottombar { position:absolute; bottom:0; left:0; right:0; height:4px; background:linear-gradient(90deg,#6c63ff,#00d4ff); }
+</style></head><body>
+  <div class="bar-top"></div>
+  <div class="bar-bottom"></div>
+  <div class="topbar"></div>
+  <div class="header"><div class="logo"><span class="aima">AIMA</span><span class="boost">BOOSTING</span></div><div class="counter">${esc(counter)}</div></div>
+  <div class="bottombar"></div>
+</body></html>`;
+  }
+
+  // For top/bottom/full layouts
+  const overlayStyle = isBottom
+    ? `position:absolute; bottom:0; left:0; width:100%; height:${overlayH}px; background:linear-gradient(0deg, #07080f 0%, #07080f 78%, rgba(7,8,15,0.85) 92%, rgba(7,8,15,0) 100%);`
+    : `position:absolute; top:0; left:0; width:100%; height:${isFull ? '100%' : overlayH + 'px'}; background:linear-gradient(180deg, #07080f 0%, #07080f 78%, rgba(7,8,15,0.85) 92%, rgba(7,8,15,0) 100%);`;
+
+  const accentBar = isBottom
+    ? `position:absolute; bottom:0; left:0; right:0; height:4px; background:linear-gradient(90deg,#6c63ff,#00d4ff);`
+    : `position:absolute; top:0; left:0; right:0; height:4px; background:linear-gradient(90deg,#6c63ff,#00d4ff,#6c63ff);`;
+
+  const headerStyle = isBottom
+    ? `position:absolute; bottom:18px; left:36px; right:36px; display:flex; align-items:center; justify-content:space-between;`
+    : `position:absolute; top:18px; left:36px; right:36px; display:flex; align-items:center; justify-content:space-between;`;
+
+  const contentStyle = isBottom
+    ? `position:absolute; bottom:64px; left:40px; right:40px; top:${Math.round(height * 0.46)}px; display:flex; flex-direction:column; justify-content:flex-start; gap:14px;`
+    : `position:absolute; top:68px; left:40px; right:40px; bottom:${isFull ? 44 : Math.round(height * 0.46)}px; display:flex; flex-direction:column; justify-content:flex-end; gap:14px;`;
+
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:${width}px; height:${height}px; background:transparent; overflow:hidden; font-family:system-ui,-apple-system,Arial,sans-serif; color:#fff; }
+  .overlay { ${overlayStyle} }
+  .grid { position:absolute; inset:0; background-image:linear-gradient(rgba(108,99,255,0.05) 1px,transparent 1px),linear-gradient(90deg,rgba(108,99,255,0.05) 1px,transparent 1px); background-size:54px 54px; }
+  .bar { ${accentBar} }
+  .header { ${headerStyle} }
+  .logo { font-size:22px; font-weight:900; letter-spacing:-0.04em; }
+  .logo .aima { color:#fff; } .logo .boost { color:#6c63ff; }
+  .counter { font-size:13px; font-weight:700; color:rgba(255,255,255,0.35); letter-spacing:0.08em; }
+  .content { ${contentStyle} }
+  .accent { width:44px; height:4px; background:linear-gradient(90deg,#6c63ff,#00d4ff); border-radius:2px; }
+  .hl { font-size:${hlSize}px; font-weight:900; line-height:1.12; letter-spacing:-0.02em; }
+  .sub { font-size:18px; font-weight:600; color:#6c63ff; line-height:1.4; }
+  .body-text { font-size:17px; color:rgba(255,255,255,0.78); line-height:1.65; }
+  .bullets { list-style:none; display:flex; flex-direction:column; gap:10px; }
+  .bullets li { display:flex; align-items:flex-start; gap:12px; font-size:17px; color:rgba(255,255,255,0.85); line-height:1.45; }
+  .bullets li::before { content:''; display:block; min-width:8px; height:8px; border-radius:50%; background:#6c63ff; margin-top:6px; flex-shrink:0; }
+</style></head><body>
+  <div class="overlay">
+    <div class="grid"></div>
+    <div class="bar"></div>
+    <div class="header">
+      <div class="logo"><span class="aima">AIMA</span><span class="boost">BOOSTING</span></div>
+      <div class="counter">${esc(counter)}</div>
+    </div>
+    <div class="content">
+      <div class="accent"></div>
+      ${headline ? `<h2 class="hl">${esc(headline)}</h2>` : ''}
+      ${subheadline ? `<p class="sub">${esc(subheadline)}</p>` : ''}
+      ${hasBullets ? `<ul class="bullets">${bullets.map(b => `<li>${esc(b)}</li>`).join('')}</ul>` : ''}
+      ${body && !hasBullets ? `<p class="body-text">${esc(body)}</p>` : ''}
+    </div>
+  </div>
+</body></html>`;
+}
 
 async function detectWatermarkPosition(base64Image, openaiKey) {
   const resp = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -586,6 +770,7 @@ Return ONLY valid JSON (no markdown) with these fields:
   * "content" = content slide with text/bullets/prompts
   * "text" = stat, quote, or minimal-text-only slide
 - has_image: true if the slide contains a significant photo, illustration, or visual element (NOT just text on a flat/dark background); false if the slide is purely text on a solid/dark background
+- layout: where the TEXT/BRANDING block is located relative to the visual content: "text_top" (text above, visual below), "text_bottom" (visual above, text below), "text_full" (text throughout, no clear visual area), "visual_full" (mostly visual, minimal text)
 - headline: main title or heading (string or null)
 - subheadline: secondary heading (string or null)
 - body: the COMPLETE body text, WORD FOR WORD — do NOT summarize, truncate, or shorten. Copy every word exactly. (string or null)
