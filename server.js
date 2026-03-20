@@ -556,6 +556,16 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
       try { extracted = await extractSlideContent(base64Thumb, openaiKey); } catch (e) { console.error('Vision error:', e.message); }
     }
 
+    // Fallback: if GPT Vision found no text (video thumbnail is just a video frame
+    // with no text overlay), use the post's original caption as body text
+    if (!extracted.headline && !extracted.body && !extracted.bullets) {
+      const caption = slide.original_caption || '';
+      // Take first 200 chars of caption as body, trimmed at last space
+      const short = caption.length > 200 ? caption.slice(0, 200).replace(/\s\S*$/, '...') : caption;
+      extracted.body = short || null;
+      extracted.layout = 'text_top';
+    }
+
     // 3. Download actual video
     const vr = await fetch(slide.slide_video_url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.instagram.com/' } });
     if (!vr.ok) throw new Error(`Video download failed: ${vr.status}`);
