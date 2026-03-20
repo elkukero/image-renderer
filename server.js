@@ -1,12 +1,10 @@
 const express = require('express');
 const puppeteer = require('puppeteer');
 const ffmpeg = require('fluent-ffmpeg');
-const ffmpegPath = require('ffmpeg-static');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-
-ffmpeg.setFfmpegPath(ffmpegPath);
+// ffmpeg is installed as a system package via nixpacks.toml — no path override needed
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -648,14 +646,11 @@ function buildVideoOverlayHtml(data) {
   const thinBarH = Math.round(height * 0.12); // for visual_full: small bars only
 
   if (isThin) {
-    // Two thin bars: top + bottom
-    overlayCSS = `
-  .bar-top { position:absolute; top:0; left:0; width:100%; height:${thinBarH}px; background:linear-gradient(180deg,#07080f 0%,#07080f 70%,rgba(7,8,15,0) 100%); }
-  .bar-bottom { position:absolute; bottom:0; left:0; width:100%; height:${thinBarH}px; background:linear-gradient(0deg,#07080f 0%,#07080f 70%,rgba(7,8,15,0) 100%); }`;
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { width:${width}px; height:${height}px; background:transparent; overflow:hidden; font-family:system-ui,-apple-system,Arial,sans-serif; color:#fff; }
-  ${overlayCSS}
+  .bar-top { position:absolute; top:0; left:0; width:100%; height:${thinBarH}px; background:linear-gradient(180deg,#07080f 0%,#07080f 70%,rgba(7,8,15,0) 100%); }
+  .bar-bottom { position:absolute; bottom:0; left:0; width:100%; height:${thinBarH}px; background:linear-gradient(0deg,#07080f 0%,#07080f 70%,rgba(7,8,15,0) 100%); }
   .topbar { position:absolute; top:0; left:0; right:0; height:4px; background:linear-gradient(90deg,#6c63ff,#00d4ff,#6c63ff); }
   .header { position:absolute; top:10px; left:36px; right:36px; display:flex; align-items:center; justify-content:space-between; }
   .logo { font-size:20px; font-weight:900; letter-spacing:-0.04em; }
@@ -723,31 +718,6 @@ function buildVideoOverlayHtml(data) {
     </div>
   </div>
 </body></html>`;
-}
-
-async function detectWatermarkPosition(base64Image, openaiKey) {
-  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openaiKey}` },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      max_tokens: 20,
-      messages: [{
-        role: 'user',
-        content: [
-          {
-            type: 'text',
-            text: 'Where is the account branding, logo, or @handle watermark in this image? Return ONLY one word: north_west, north_east, south_west, or south_east. If unclear, return north_west.',
-          },
-          { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64Image}`, detail: 'low' } },
-        ],
-      }],
-    }),
-  });
-  const data = await resp.json();
-  const raw = (data.choices?.[0]?.message?.content || 'north_west').toLowerCase().trim().replace(/[^a-z_]/g, '');
-  const valid = ['north_west', 'north_east', 'south_west', 'south_east'];
-  return valid.includes(raw) ? raw : 'north_west';
 }
 
 async function extractSlideContent(base64Image, openaiKey) {
