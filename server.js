@@ -567,31 +567,11 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
   const videoPath = path.join(os.tmpdir(), `vid_${tag}.mp4`);
   const textPngPath = path.join(os.tmpdir(), `txt_${tag}.png`);
   const outputPath = path.join(os.tmpdir(), `out_${tag}.mp4`);
-  const cleanup = () => [videoPath, textPngPath, outputPath].forEach(f => { try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (_) {} });
+  const framePath = path.join(os.tmpdir(), `frame_${tag}.jpg`);
+  const cleanup = () => [videoPath, textPngPath, outputPath, framePath].forEach(f => { try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (_) {} });
 
   try {
-    // 1. Download thumbnail for GPT Vision extraction
-    let base64Thumb = null;
-    try {
-      const r = await fetch(slide.slide_image_url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.instagram.com/' } });
-      if (r.ok) base64Thumb = Buffer.from(await r.arrayBuffer()).toString('base64');
-    } catch (e) { console.error('Thumb dl error:', e.message); }
-
-    // 2. Extract text content from thumbnail
-    let extracted = { slide_type: 'content', layout: 'text_top', headline: null, body: null, bullets: null, visual_top_pct: null };
-    if (base64Thumb) {
-      try { extracted = await extractSlideContent(base64Thumb, openaiKey); } catch (e) { console.error('Vision error:', e.message); }
-    }
-
-    // Caption fallback: if GPT Vision found no text, use original_caption
-    if (!extracted.headline && !extracted.body && !(extracted.bullets && extracted.bullets.length)) {
-      const caption = slide.original_caption || '';
-      const short = caption.length > 200 ? caption.slice(0, 200).replace(/\s\S*$/, '...') : caption;
-      extracted.body = short || null;
-      extracted.layout = extracted.layout || 'text_top';
-    }
-
-    // 3. Download actual video — stream directly to disk to avoid loading into heap
+    // 1. Download video first — stream directly to disk to avoid loading into heap
     const vr = await fetch(slide.slide_video_url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.instagram.com/' } });
     if (!vr.ok) throw new Error(`Video download failed: ${vr.status}`);
     await new Promise((resolve, reject) => {
@@ -605,7 +585,7 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
       pump();
     });
 
-    // 4. Get video dimensions + duration via ffprobe
+    // 2. Get video dimensions + duration via ffprobe
     const dims = await new Promise((resolve) => {
       ffmpeg.ffprobe(videoPath, (err, meta) => {
         if (err) return resolve({ width: 1080, height: 1080, duration: 30 });
@@ -618,12 +598,40 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
       });
     });
 
+    // 3. Extract first frame from video for accurate layout analysis
+    // (thumbnail/displayUrl often shows only the visual region, not the full layout with text overlay)
+    await new Promise((resolve) => {
+      ffmpeg(videoPath)
+        .inputOptions(['-ss', '0.5'])
+        .outputOptions(['-frames:v', '1', '-q:v', '3'])
+        .output(framePath)
+        .on('end', resolve)
+        .on('error', (e) => { console.error('Frame extract error:', e.message); resolve(); })
+        .run();
+    });
+
+    // 4. GPT Vision on first frame — detects actual layout (text region + visual region)
+    let extracted = { slide_type: 'content', layout: 'text_top', headline: null, body: null, bullets: null, visual_top_pct: null };
+    let base64Frame = null;
+    try { base64Frame = fs.readFileSync(framePath).toString('base64'); } catch (_) {}
+
+    if (base64Frame) {
+      try { extracted = await extractSlideContent(base64Frame, openaiKey); } catch (e) { console.error('Vision error:', e.message); }
+    }
+
+    // 5. Caption fallback: if GPT Vision found no text, use original_caption
+    if (!extracted.headline && !extracted.body && !(extracted.bullets && extracted.bullets.length)) {
+      const caption = slide.original_caption || '';
+      const short = caption.length > 200 ? caption.slice(0, 200).replace(/\s\S*$/, '...') : caption;
+      extracted.body = short || null;
+      extracted.layout = extracted.layout || 'text_top';
+    }
+
     const layout = extracted.layout || 'text_top';
 
     // If pure text slide (no visual region) — skip video compositing, return as image
     if (layout === 'text_full') {
       cleanup();
-      // Render as branded text image instead
       const page = await sharedBrowser.newPage();
       await page.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
       await page.setContent(buildTextBlockHtml({ ...extracted, slide_number: slide.slide_number, total_slides: slide.total_slides, width: 1080, height: 1080 }), { waitUntil: 'networkidle2', timeout: 10000 });
@@ -634,22 +642,22 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
       return { image_url: imageUrl, is_video: false, already_cloudinary: false, slide_number: slide.slide_number, original_caption: slide.original_caption || '', post_id: slide.post_id || '', source_account: slide.source_account || '' };
     }
 
-    // 5. Calculate crop + text block dimensions
-    // visual_top_pct: where the visual content starts in the original frame (0 = whole video is visual)
-    const defaultVtp = layout === 'text_bottom' ? 0.0 : 0.0; // for pure video children, assume full frame is visual
+    // 6. Calculate crop + text block dimensions
+    // visual_top_pct: where the visual content starts in the original frame
+    // Now detected from the actual video frame, not the thumbnail
     const vtp = (typeof extracted.visual_top_pct === 'number' && extracted.visual_top_pct > 0.05)
       ? extracted.visual_top_pct
-      : defaultVtp;
+      : 0.0;
 
     const vidW = dims.width;
     const vidH = dims.height;
     const cropY = Math.round(vidH * vtp);   // pixels to skip from top (original text area)
     const cropH = vidH - cropY;             // height of visual content in original
 
-    // Text block height: proportional to video, minimum 320px
+    // Text block height: proportional to cropped region, minimum 320px
     const textH = Math.max(320, Math.round(1080 * (vtp > 0.05 ? vtp : 0.35)));
 
-    // 6. Render AIMABOOSTING text block as opaque PNG
+    // 7. Render AIMABOOSTING text block as opaque PNG
     const page = await sharedBrowser.newPage();
     await page.setViewport({ width: 1080, height: textH, deviceScaleFactor: 1 });
     await page.setContent(buildTextBlockHtml({
@@ -663,7 +671,7 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
     await page.close();
     fs.writeFileSync(textPngPath, textPngBuf);
 
-    // 7. FFmpeg: crop visual region from video + stack with text block PNG
+    // 8. FFmpeg: crop visual region from video + stack with text block PNG
     const cropFilter = cropY > 10
       ? `[1:v]crop=${vidW}:${cropH}:0:${cropY},scale=1080:-2,setsar=1[vid]`
       : `[1:v]scale=1080:-2,setsar=1[vid]`;
@@ -697,7 +705,7 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
         .run();
     });
 
-    // 8. Upload processed video to Cloudinary
+    // 9. Upload processed video to Cloudinary
     const cloudinaryUrl = await uploadVideoToCloudinary(fs.readFileSync(outputPath));
     cleanup();
 
