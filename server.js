@@ -9,7 +9,7 @@ const os = require('os');
 const app = express();
 app.use(express.json({ limit: '20mb' }));
 
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '2026-03-22-v3', endpoints: ['render-rebrand-batch'] }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '2026-03-22-v4', endpoints: ['render-rebrand-batch', 'render-generate-batch'] }));
 
 app.post('/render', async (req, res) => {
   const { background_url, inset_url, headline } = req.body;
@@ -874,18 +874,17 @@ RULES:
   return JSON.parse(clean);
 }
 
-// buildSlideFromContent: creates AIMABOOSTING branded slides.
-// Layout strategy (driven by slide_type + has_image):
-//   cover  + has_image → image fills slide (15px blur, 70% opacity), dark gradient at bottom for text
-//   cover  + no image  → dark bg, text centered
-//   content/text + has_image → SPLIT: dark top (text) + blurred image bottom
-//   content/text + no image  → pure dark bg with text (no image section)
+// buildSlideFromContent: Instagram-style AIMABOOSTING slides.
+// Layout:
+//   cover  + image → full-bleed photo, dark gradient bottom, big Bebas Neue text w/ teal highlights
+//   cover  + no image → black bg, centered big text
+//   content + image → black top half (text) + sharp photo bottom half (no blur)
+//   content/text + no image → black bg, bold headline + body/bullets
 function buildSlideFromContent(data) {
   const {
     slide_type = 'text',
     has_image = false,
     headline, subheadline, body, bullets,
-    stat_number, stat_label,
     slide_number = 1, total_slides = 1,
     imageUrl = null,
   } = data;
@@ -895,224 +894,248 @@ function buildSlideFromContent(data) {
 
   const counter = `${slide_number}/${total_slides}`;
   const hasBullets = Array.isArray(bullets) && bullets.length > 0;
-  const hasStatNumber = stat_number && String(stat_number).trim();
   const hlText = headline || '';
-  // Content slides: bold IG/TikTok style
-  const hlSize = hlText.length > 80 ? 44 : hlText.length > 60 ? 52 : hlText.length > 40 ? 60 : hlText.length > 20 ? 68 : 76;
-  // Cover slides: massive impact (Bebas Neue)
-  const coverHlSize = hlText.length > 100 ? 78 : hlText.length > 80 ? 90 : hlText.length > 60 ? 102 : hlText.length > 40 ? 112 : hlText.length > 20 ? 122 : 130;
 
-  const imgBgStyle = imageUrl ? `background-image:url('${imageUrl}');` : '';
+  // Split headline: first half white, second half teal (IG impact style)
+  function splitHeadline(text) {
+    if (!text) return '';
+    const safe = esc(text);
+    const words = safe.split(' ');
+    if (words.length <= 3) return `<span class="hl-teal">${safe}</span>`;
+    const split = Math.ceil(words.length * 0.42);
+    const white = words.slice(0, split).join(' ');
+    const teal = words.slice(split).join(' ');
+    return `${white} <span class="hl-teal">${teal}</span>`;
+  }
+
+  // Font sizes
+  const coverHlSize = hlText.length > 80 ? 86 : hlText.length > 60 ? 100 : hlText.length > 40 ? 116 : hlText.length > 20 ? 128 : 138;
+  const contentHlSize = hlText.length > 70 ? 52 : hlText.length > 50 ? 60 : hlText.length > 30 ? 68 : 76;
+  const bodySize = 28;
+
   const showSplit = (has_image || false) && !!imageUrl;
 
-  // ── Shared CSS ─────────────────────────────────────────────────────────────
-  const baseCSS = `
-  @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Oswald:wght@700&display=swap');
-  * { margin:0; padding:0; box-sizing:border-box; }
-  html, body {
-    width:1080px; height:1080px; overflow:hidden; background:#07080f;
-    font-family:system-ui,-apple-system,'Segoe UI',Arial,sans-serif; color:#fff;
-  }
-  /* Cover: image fills slide — sharp, no blur */
-  .photo-cover {
-    position:absolute; inset:0;
-    ${imgBgStyle}
-    background-size:cover; background-position:center;
-    filter:saturate(1.15) brightness(0.88);
-    transform:scale(1.01);
-  }
-  /* Cover gradient: very light overlay at top, image shows clearly in the middle, dark at bottom 35% for text */
-  .cover-gradient {
-    position:absolute; inset:0;
-    background:linear-gradient(180deg,
-      rgba(7,8,15,0.30) 0%,
-      rgba(7,8,15,0.05) 15%,
-      rgba(7,8,15,0.00) 38%,
-      rgba(7,8,15,0.00) 52%,
-      rgba(7,8,15,0.55) 65%,
-      rgba(7,8,15,0.92) 78%,
-      rgba(7,8,15,1.00) 100%
-    );
-  }
-  /* Split layout: image fills canvas, gradient reveals it only in the bottom 55% */
-  .photo-split {
-    position:absolute; inset:0;
-    ${imgBgStyle}
-    background-size:cover; background-position:center center;
-    filter:blur(4px) brightness(0.75) saturate(1.1);
-    transform:scale(1.03);
-  }
-  .split-gradient {
-    position:absolute; inset:0;
-    background:linear-gradient(180deg,
-      rgba(7,8,15,1.00)  0%,
-      rgba(7,8,15,1.00) 42%,
-      rgba(7,8,15,0.70) 55%,
-      rgba(7,8,15,0.25) 75%,
-      rgba(7,8,15,0.10) 100%
-    );
-  }
-  /* Plain dark bg (no image) */
-  .dark-bg { position:absolute; inset:0; background:#07080f; }
-  .dark-overlay { position:absolute; inset:0; background:linear-gradient(150deg, rgba(14,15,28,0.85) 0%, rgba(7,8,15,0.90) 100%); }
-  .grid {
-    position:absolute; inset:0;
-    background-image:
-      linear-gradient(rgba(108,99,255,0.05) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(108,99,255,0.05) 1px, transparent 1px);
-    background-size:60px 60px;
-  }
-  .glow { position:absolute; border-radius:50%; filter:blur(90px); pointer-events:none; }
-  .glow-1 { width:500px; height:500px; background:rgba(108,99,255,0.18); top:-100px; right:-80px; }
-  .glow-2 { width:380px; height:380px; background:rgba(0,212,255,0.07); bottom:50px; left:-60px; }
-  .topbar { position:absolute; top:0; left:0; right:0; height:5px; background:linear-gradient(90deg,#6c63ff,#00d4ff,#6c63ff); }
-  .bottombar { position:absolute; bottom:0; left:0; right:0; height:5px; background:linear-gradient(90deg,#6c63ff,#00d4ff); }
-  .header { position:absolute; top:24px; left:44px; right:44px; display:flex; align-items:center; justify-content:space-between; z-index:10; }
-  .logo { font-size:24px; font-weight:900; letter-spacing:-0.04em; line-height:1; }
-  .logo .aima { color:#fff; }
-  .logo .boost { color:#6c63ff; }
-  .counter { font-size:14px; font-weight:700; color:rgba(255,255,255,0.35); letter-spacing:0.08em; }
-  .accent { width:50px; height:4px; background:linear-gradient(90deg,#6c63ff,#00d4ff); border-radius:2px; flex-shrink:0; }
-  .hl { font-family:'Bebas Neue','Oswald',Impact,Arial,sans-serif; font-weight:400; color:#fff; line-height:1.0; letter-spacing:0.5px; text-transform:uppercase; }
-  .sub { font-size:24px; font-weight:600; color:#6c63ff; line-height:1.4; }
-  .body-text { font-size:24px; font-weight:500; color:#fff; line-height:1.65; }
-  .bullets { list-style:none; display:flex; flex-direction:column; gap:16px; }
-  .bullets li { display:flex; align-items:flex-start; gap:16px; font-size:24px; font-weight:500; color:#fff; line-height:1.45; }
-  .bullets li::before { content:''; display:block; min-width:10px; height:10px; border-radius:50%; background:#6c63ff; box-shadow:0 0 8px rgba(108,99,255,0.7); margin-top:8px; flex-shrink:0; }
-  .stat-num { font-size:148px; font-weight:900; line-height:1; background:linear-gradient(135deg,#6c63ff,#00d4ff); -webkit-background-clip:text; -webkit-text-fill-color:transparent; letter-spacing:-0.05em; }
-  .stat-lbl { font-size:32px; font-weight:700; color:#fff; line-height:1.3; }
-  .stat-body { font-size:20px; color:rgba(255,255,255,0.45); line-height:1.6; }`;
+  // ── Shared elements ─────────────────────────────────────────────────────────
+  const logoBar = `
+    <div style="position:absolute;top:0;left:0;right:0;height:72px;display:flex;align-items:center;justify-content:space-between;padding:0 40px;z-index:20;background:linear-gradient(180deg,rgba(0,0,0,0.60) 0%,transparent 100%);">
+      <div style="font-family:system-ui,-apple-system,Arial,sans-serif;font-size:26px;font-weight:900;letter-spacing:-0.03em;line-height:1;">
+        <span style="color:#fff;">AIMA</span><span style="color:#00d4ff;">BOOSTING</span>
+      </div>
+      <div style="font-size:15px;font-weight:700;color:rgba(255,255,255,0.55);letter-spacing:0.08em;">${esc(counter)}</div>
+    </div>`;
 
-  const header = `<div class="header"><div class="logo"><span class="aima">AIMA</span><span class="boost">BOOSTING</span></div><div class="counter">${esc(counter)}</div></div>`;
-  const decorNoGlow = `<div class="grid"></div><div class="topbar"></div><div class="bottombar"></div>${header}`;
-  const decorFull = `<div class="grid"></div><div class="glow glow-1"></div><div class="glow glow-2"></div><div class="topbar"></div><div class="bottombar"></div>${header}`;
+  const logoBarDark = `
+    <div style="position:absolute;top:0;left:0;right:0;height:72px;display:flex;align-items:center;justify-content:space-between;padding:0 40px;z-index:20;">
+      <div style="font-family:system-ui,-apple-system,Arial,sans-serif;font-size:26px;font-weight:900;letter-spacing:-0.03em;line-height:1;">
+        <span style="color:#fff;">AIMA</span><span style="color:#00d4ff;">BOOSTING</span>
+      </div>
+      <div style="font-size:15px;font-weight:700;color:rgba(255,255,255,0.40);letter-spacing:0.08em;">${esc(counter)}</div>
+    </div>`;
 
-  // ── COVER with image: full-bleed photo + massive text at bottom (TikTok/IG style) ──
+  const baseFont = `@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@500;600;700;900&display=swap');`;
+
+  // ── COVER with image ────────────────────────────────────────────────────────
   if (slide_type === 'cover' && imageUrl) {
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-  ${baseCSS}
-  /* Stronger gradient: image shows in top 60%, solid dark below for text readability */
-  .cover-gradient {
+  ${baseFont}
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:1080px; height:1080px; overflow:hidden; background:#000; font-family:'Inter',system-ui,Arial,sans-serif; }
+  .photo {
+    position:absolute; inset:0;
+    background-image:url('${imageUrl}');
+    background-size:cover; background-position:center;
+    filter:brightness(0.9) saturate(1.1);
+  }
+  .grad {
     position:absolute; inset:0;
     background:linear-gradient(180deg,
-      rgba(7,8,15,0.20) 0%,
-      rgba(7,8,15,0.00) 15%,
-      rgba(7,8,15,0.00) 40%,
-      rgba(7,8,15,0.70) 60%,
-      rgba(7,8,15,0.97) 76%,
-      rgba(7,8,15,1.00) 100%
+      rgba(0,0,0,0.30) 0%,
+      rgba(0,0,0,0.00) 22%,
+      rgba(0,0,0,0.00) 42%,
+      rgba(0,0,0,0.65) 62%,
+      rgba(0,0,0,0.95) 78%,
+      rgba(0,0,0,1.00) 100%
     );
   }
-  .cover-text {
-    position:absolute; bottom:0; left:0; right:0; padding:0 48px 52px;
-    display:flex; flex-direction:column; gap:12px; z-index:5;
+  .bottom-block {
+    position:absolute; bottom:0; left:0; right:0;
+    padding:12px 44px 50px;
+    display:flex; flex-direction:column; gap:14px; z-index:10;
   }
-  .cover-sep { width:56px; height:4px; background:linear-gradient(90deg,#6c63ff,#00d4ff); border-radius:2px; }
+  .sep { width:60px; height:5px; background:linear-gradient(90deg,#00d4ff,#6c63ff); border-radius:3px; }
   .cover-hl {
-    font-family:'Bebas Neue','Oswald',Impact,Arial,sans-serif;
-    font-size:${coverHlSize}px; font-weight:400; line-height:0.95;
-    text-transform:uppercase; letter-spacing:1.5px;
-    text-shadow:0 4px 24px rgba(0,0,0,1), 0 2px 6px rgba(0,0,0,1);
-    color:#fff; word-break:break-word;
+    font-family:'Bebas Neue',Impact,Arial,sans-serif;
+    font-size:${coverHlSize}px; font-weight:400; line-height:0.93;
+    text-transform:uppercase; letter-spacing:2px; color:#fff;
+    text-shadow:0 3px 20px rgba(0,0,0,0.9), 0 1px 4px rgba(0,0,0,1);
+    word-break:break-word;
   }
-  .cover-sub { font-size:24px; font-weight:600; color:rgba(255,255,255,0.80); line-height:1.45; }
+  .hl-teal { color:#00d4ff; }
+  .swipe-btn {
+    display:inline-flex; align-items:center; gap:10px;
+    border:2px solid rgba(255,255,255,0.35); border-radius:50px;
+    padding:10px 24px; width:fit-content;
+    font-size:16px; font-weight:700; color:rgba(255,255,255,0.80); letter-spacing:0.08em;
+  }
 </style></head><body>
-  <div class="photo-cover"></div>
-  <div class="cover-gradient"></div>
-  ${decorNoGlow}
-  <div class="cover-text">
-    <div class="cover-sep"></div>
-    ${headline ? `<h1 class="cover-hl">${esc(headline)}</h1>` : ''}
-    ${subheadline ? `<p class="cover-sub">${esc(subheadline)}</p>` : ''}
+  <div class="photo"></div>
+  <div class="grad"></div>
+  ${logoBar}
+  <div class="bottom-block">
+    <div class="sep"></div>
+    ${headline ? `<h1 class="cover-hl">${splitHeadline(headline)}</h1>` : ''}
+    <div class="swipe-btn">DESLIZA PARA VER MÁS &nbsp;›</div>
   </div>
 </body></html>`;
   }
 
-  // ── COVER without image: dark bg, massive centered text ───────────────────
+  // ── COVER without image ─────────────────────────────────────────────────────
   if (slide_type === 'cover') {
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-  ${baseCSS}
+  ${baseFont}
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:1080px; height:1080px; overflow:hidden; background:#000; font-family:'Inter',system-ui,Arial,sans-serif; }
+  .noise {
+    position:absolute; inset:0;
+    background:radial-gradient(ellipse 80% 60% at 50% 40%, rgba(0,212,255,0.06) 0%, transparent 70%),
+               radial-gradient(ellipse 60% 80% at 80% 80%, rgba(108,99,255,0.07) 0%, transparent 70%),
+               #000;
+  }
   .cover-area {
-    position:absolute; top:90px; left:56px; right:56px; bottom:44px;
-    display:flex; flex-direction:column; justify-content:center; gap:28px;
+    position:absolute; top:90px; left:52px; right:52px; bottom:60px;
+    display:flex; flex-direction:column; justify-content:center; gap:24px;
   }
-  .brand-tag { font-size:14px; font-weight:700; color:#6c63ff; letter-spacing:0.18em; text-transform:uppercase; }
+  .handle { font-size:16px; font-weight:700; color:#00d4ff; letter-spacing:0.16em; text-transform:uppercase; }
+  .sep { width:64px; height:5px; background:linear-gradient(90deg,#00d4ff,#6c63ff); border-radius:3px; }
   .cover-hl {
-    font-family:'Bebas Neue','Oswald',Impact,Arial,sans-serif;
-    font-size:${coverHlSize}px; font-weight:400;
-    text-transform:uppercase; letter-spacing:1.5px; line-height:0.95;
-    color:#fff; word-break:break-word;
+    font-family:'Bebas Neue',Impact,Arial,sans-serif;
+    font-size:${coverHlSize}px; font-weight:400; line-height:0.93;
+    text-transform:uppercase; letter-spacing:2px; color:#fff;
+    word-break:break-word;
   }
-  .cover-body { font-size:22px; font-weight:500; color:rgba(255,255,255,0.85); line-height:1.6; }
+  .hl-teal { color:#00d4ff; }
+  .cover-body { font-size:24px; font-weight:500; color:rgba(255,255,255,0.75); line-height:1.6; }
+  .swipe-btn {
+    display:inline-flex; align-items:center; gap:10px;
+    border:2px solid rgba(255,255,255,0.25); border-radius:50px;
+    padding:10px 24px; width:fit-content;
+    font-size:16px; font-weight:700; color:rgba(255,255,255,0.65); letter-spacing:0.08em;
+  }
 </style></head><body>
-  <div class="dark-bg"></div><div class="dark-overlay"></div>
-  ${decorFull}
+  <div class="noise"></div>
+  ${logoBarDark}
   <div class="cover-area">
-    <div class="brand-tag">@AIMABOOSTING</div>
-    <div class="accent"></div>
-    ${headline ? `<h1 class="cover-hl">${esc(headline)}</h1>` : ''}
-    ${subheadline ? `<p class="sub">${esc(subheadline)}</p>` : ''}
+    <div class="handle">@AIMABOOSTING</div>
+    <div class="sep"></div>
+    ${headline ? `<h1 class="cover-hl">${splitHeadline(headline)}</h1>` : ''}
     ${body ? `<p class="cover-body">${esc(body)}</p>` : ''}
+    <div class="swipe-btn">DESLIZA PARA VER MÁS &nbsp;›</div>
   </div>
 </body></html>`;
   }
 
-  // ── CONTENT / TEXT with image: split layout ────────────────────────────────
-  if ((slide_type === 'content' || slide_type === 'text') && showSplit) {
+  // ── CONTENT with image: BLACK top text + SHARP photo bottom ────────────────
+  if ((slide_type === 'content') && showSplit) {
     const bulletsHtml = hasBullets
-      ? `<ul class="bullets">${bullets.map(b => `<li>${esc(b)}</li>`).join('')}</ul>`
+      ? `<ul style="list-style:none;display:flex;flex-direction:column;gap:14px;">${bullets.map(b =>
+          `<li style="display:flex;align-items:flex-start;gap:14px;font-size:${bodySize}px;font-weight:500;color:#fff;line-height:1.45;">
+            <span style="display:block;min-width:9px;height:9px;border-radius:50%;background:#00d4ff;margin-top:10px;flex-shrink:0;"></span>
+            ${esc(b)}</li>`
+        ).join('')}</ul>`
       : '';
-    const bodyHtml = body && !hasBullets ? `<p class="body-text">${esc(body)}</p>` : '';
+    const bodyHtml = body && !hasBullets
+      ? `<p style="font-size:${bodySize}px;font-weight:500;color:#fff;line-height:1.65;">${esc(body)}</p>`
+      : '';
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-  ${baseCSS}
-  .content-area {
-    position:absolute; top:78px; left:52px; right:52px; height:480px;
-    display:flex; flex-direction:column; justify-content:flex-end; gap:18px;
-    padding-bottom:28px;
+  ${baseFont}
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:1080px; height:1080px; overflow:hidden; background:#000; font-family:'Inter',system-ui,Arial,sans-serif; }
+  .photo-bottom {
+    position:absolute; left:0; right:0; bottom:0; height:560px;
+    background-image:url('${imageUrl}');
+    background-size:cover; background-position:center top;
   }
-  .content-hl { font-size:${hlSize}px; }
+  .photo-fade {
+    position:absolute; left:0; right:0; bottom:0; height:600px;
+    background:linear-gradient(180deg,#000 0%,rgba(0,0,0,0.10) 40%,rgba(0,0,0,0.0) 100%);
+  }
+  .text-block {
+    position:absolute; top:0; left:0; right:0; height:490px;
+    background:#000;
+    display:flex; flex-direction:column; justify-content:center;
+    padding:90px 44px 32px;
+    gap:18px;
+  }
+  .sep { width:52px; height:5px; background:linear-gradient(90deg,#00d4ff,#6c63ff); border-radius:3px; flex-shrink:0; }
+  .content-hl {
+    font-family:'Bebas Neue',Impact,Arial,sans-serif;
+    font-size:${contentHlSize}px; font-weight:400; line-height:0.95;
+    text-transform:uppercase; letter-spacing:1.5px; color:#fff;
+    word-break:break-word;
+  }
+  .brand-bottom {
+    position:absolute; bottom:18px; left:0; right:0;
+    display:flex; justify-content:center; align-items:center; z-index:10;
+  }
+  .brand-pill {
+    background:rgba(0,0,0,0.70); border:1.5px solid rgba(255,255,255,0.20);
+    border-radius:50px; padding:6px 20px;
+    font-size:17px; font-weight:900; letter-spacing:-0.02em; color:#fff;
+  }
+  .brand-pill span { color:#00d4ff; }
 </style></head><body>
-  <div class="photo-split"></div><div class="split-gradient"></div>
-  ${decorNoGlow}
-  <div class="content-area">
-    <div class="accent"></div>
-    ${headline ? `<h2 class="hl content-hl">${esc(headline)}</h2>` : ''}
-    ${subheadline ? `<p class="sub">${esc(subheadline)}</p>` : ''}
+  <div class="photo-bottom"></div>
+  <div class="photo-fade"></div>
+  <div class="text-block">
+    <div class="sep"></div>
+    ${headline ? `<h2 class="content-hl">${esc(headline)}</h2>` : ''}
     ${bulletsHtml}${bodyHtml}
   </div>
+  ${logoBar}
+  <div class="brand-bottom">
+    <div class="brand-pill">AIMA<span>BOOSTING</span></div>
+  </div>
 </body></html>`;
   }
 
-  // ── CONTENT / TEXT / STAT without image: clean dark layout ────────────────
-  let innerHtml = '';
-  if (hasStatNumber) {
-    innerHtml = `
-      <div class="stat-num">${esc(stat_number)}</div>
-      ${stat_label ? `<div class="stat-lbl">${esc(stat_label)}</div>` : ''}
-      ${body ? `<p class="stat-body">${esc(body)}</p>` : ''}`;
-  } else {
-    const bulletsHtml = hasBullets
-      ? `<ul class="bullets">${bullets.map(b => `<li>${esc(b)}</li>`).join('')}</ul>`
-      : '';
-    innerHtml = `
-      <div class="accent"></div>
-      ${headline ? `<h2 class="hl" style="font-size:${hlSize}px">${esc(headline)}</h2>` : ''}
-      ${subheadline ? `<p class="sub">${esc(subheadline)}</p>` : ''}
-      ${bulletsHtml}
-      ${body && !hasBullets ? `<p class="body-text">${esc(body)}</p>` : ''}`;
-  }
+  // ── TEXT / BULLETS (no image) ───────────────────────────────────────────────
+  const bulletsHtml = hasBullets
+    ? `<ul style="list-style:none;display:flex;flex-direction:column;gap:20px;">${bullets.map(b =>
+        `<li style="display:flex;align-items:flex-start;gap:16px;font-size:${bodySize}px;font-weight:500;color:#fff;line-height:1.45;">
+          <span style="display:block;min-width:10px;height:10px;border-radius:50%;background:#00d4ff;box-shadow:0 0 8px rgba(0,212,255,0.7);margin-top:9px;flex-shrink:0;"></span>
+          ${esc(b)}</li>`
+      ).join('')}</ul>`
+    : '';
+  const bodyHtml2 = body && !hasBullets
+    ? `<p style="font-size:${bodySize}px;font-weight:500;color:rgba(255,255,255,0.85);line-height:1.65;">${esc(body)}</p>`
+    : '';
 
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-  ${baseCSS}
+  ${baseFont}
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:1080px; height:1080px; overflow:hidden; background:#000; font-family:'Inter',system-ui,Arial,sans-serif; }
+  .noise {
+    position:absolute; inset:0;
+    background:radial-gradient(ellipse 70% 50% at 50% 30%, rgba(0,212,255,0.05) 0%, transparent 70%), #000;
+  }
   .text-area {
-    position:absolute; top:90px; left:56px; right:56px; bottom:44px;
+    position:absolute; top:90px; left:52px; right:52px; bottom:52px;
     display:flex; flex-direction:column; justify-content:center; gap:22px;
   }
+  .sep { width:52px; height:5px; background:linear-gradient(90deg,#00d4ff,#6c63ff); border-radius:3px; flex-shrink:0; }
+  .text-hl {
+    font-family:'Bebas Neue',Impact,Arial,sans-serif;
+    font-size:${contentHlSize}px; font-weight:400; line-height:0.95;
+    text-transform:uppercase; letter-spacing:1.5px; color:#fff;
+    word-break:break-word;
+  }
 </style></head><body>
-  <div class="dark-bg"></div><div class="dark-overlay"></div>
-  ${decorFull}
+  <div class="noise"></div>
+  ${logoBarDark}
   <div class="text-area">
-    ${innerHtml}
+    <div class="sep"></div>
+    ${headline ? `<h2 class="text-hl">${esc(headline)}</h2>` : ''}
+    ${bulletsHtml}${bodyHtml2}
   </div>
 </body></html>`;
 }
