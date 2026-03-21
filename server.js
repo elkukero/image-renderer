@@ -564,17 +564,15 @@ app.post('/render-rebrand-batch', async (req, res) => {
 
 async function processVideoSlide(slide, openaiKey, sharedBrowser) {
   const tag = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-  const videoPath  = path.join(os.tmpdir(), `vid_${tag}.mp4`);
+  const videoPath   = path.join(os.tmpdir(), `vid_${tag}.mp4`);
   const textPngPath = path.join(os.tmpdir(), `txt_${tag}.png`);
-  const outputPath = path.join(os.tmpdir(), `out_${tag}.mp4`);
-  const framePath  = path.join(os.tmpdir(), `frame_${tag}.jpg`);
-  const cleanup = () => [videoPath, textPngPath, outputPath, framePath].forEach(f => {
+  const outputPath  = path.join(os.tmpdir(), `out_${tag}.mp4`);
+  const cleanup = () => [videoPath, textPngPath, outputPath].forEach(f => {
     try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (_) {}
   });
 
   try {
-    // ── Step 1: Thumbnail → extract TEXT only (headline / body / bullets)
-    // The thumbnail shows the static layout of the slide with the competitor's text.
+    // ── 1. Extract text from thumbnail (for our branded text block)
     let extracted = { slide_type: 'content', layout: 'text_top', headline: null, body: null, bullets: null };
     if (slide.slide_image_url) {
       try {
@@ -585,13 +583,37 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
         }
       } catch (e) { console.error('Thumb/Vision error:', e.message); }
     }
-    // Caption fallback if no text found
     if (!extracted.headline && !extracted.body && !(extracted.bullets && extracted.bullets.length)) {
-      const caption = slide.original_caption || '';
-      extracted.body = caption.length > 200 ? caption.slice(0, 200).replace(/\s\S*$/, '...') : caption || null;
+      const cap = slide.original_caption || '';
+      extracted.body = cap.length > 200 ? cap.slice(0, 200).replace(/\s\S*$/, '...') : cap || null;
     }
 
-    // ── Step 2: Download video — stream directly to disk (no heap OOM)
+    // ── 2. COVER CHECK — slide 1 of any carousel is always the cover.
+    // Also cover if GPT detected cover/text_bottom layout (image on top, text below).
+    // Cover → render as IMAGE: thumbnail as photo background + our big text at bottom.
+    const isCover = slide.slide_number === 1
+      || extracted.slide_type === 'cover'
+      || extracted.layout === 'text_bottom';
+
+    if (isCover) {
+      const coverPage = await sharedBrowser.newPage();
+      await coverPage.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
+      await coverPage.setContent(buildSlideFromContent({
+        ...extracted,
+        slide_type: 'cover',
+        has_image: !!(slide.slide_image_url),
+        imageUrl: slide.slide_image_url || null,
+        slide_number: slide.slide_number,
+        total_slides: slide.total_slides,
+      }), { waitUntil: 'networkidle2', timeout: 15000 });
+      const coverBuf = await coverPage.screenshot({ type: 'jpeg', quality: 90, fullPage: false });
+      await coverPage.close();
+      const imageUrl = await uploadToImgbb(coverBuf, process.env.IMGBB_API_KEY);
+      cleanup();
+      return { image_url: imageUrl, is_video: false, already_cloudinary: false, slide_number: slide.slide_number, original_caption: slide.original_caption || '', post_id: slide.post_id || '', source_account: slide.source_account || '' };
+    }
+
+    // ── 3. CONTENT VIDEO — download and compose: [text block] + [video footage]
     const vr = await fetch(slide.slide_video_url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.instagram.com/' } });
     if (!vr.ok) throw new Error(`Video download failed: ${vr.status}`);
     await new Promise((resolve, reject) => {
@@ -605,53 +627,18 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
       pump();
     });
 
-    // ── Step 3: ffprobe → dimensions + duration
     const dims = await new Promise((resolve) => {
       ffmpeg.ffprobe(videoPath, (err, meta) => {
-        if (err) return resolve({ width: 1080, height: 1080, duration: 30 });
+        if (err) return resolve({ duration: 30 });
         const vs = (meta.streams || []).find(s => s.codec_type === 'video') || {};
-        resolve({ width: vs.width || 1080, height: vs.height || 1080, duration: meta.format?.duration || 30 });
+        resolve({ duration: meta.format?.duration || 30 });
       });
     });
 
-    // ── Step 4: GPT decides the layout — thumbnail analysis drives everything
-    // slide_type = 'cover' → video is a title card → build cover IMAGE (thumbnail as background)
-    // slide_type = 'content' with visual_top_pct > 0.05 → crop competitor's text region from video
-    // slide_type = 'content' with visual_top_pct ≈ 0 → video is pure footage, use as-is
-    const slideType = extracted.slide_type || 'content';
-    const vtp = (typeof extracted.visual_top_pct === 'number' && extracted.visual_top_pct > 0.05)
-      ? Math.min(extracted.visual_top_pct, 0.85) // cap at 85% to avoid destroying the footage
-      : 0.0;
-
-    console.log(`[video] slide_type=${slideType} vtp=${vtp} duration=${dims.duration}s`);
-
-    // COVER: thumbnail as background image, our big bold text at bottom → new IMAGE slide
-    if (slideType === 'cover' || extracted.layout === 'text_bottom') {
-      const coverPage = await sharedBrowser.newPage();
-      await coverPage.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
-      const coverHtml = buildSlideFromContent({
-        ...extracted,
-        slide_type: 'cover',
-        has_image: !!(slide.slide_image_url),
-        imageUrl: slide.slide_image_url || null,
-        slide_number: slide.slide_number,
-        total_slides: slide.total_slides,
-      });
-      await coverPage.setContent(coverHtml, { waitUntil: 'networkidle2', timeout: 15000 });
-      const coverBuf = await coverPage.screenshot({ type: 'jpeg', quality: 90, fullPage: false });
-      await coverPage.close();
-      const imageUrl = await uploadToImgbb(coverBuf, process.env.IMGBB_API_KEY);
-      cleanup();
-      return { image_url: imageUrl, is_video: false, already_cloudinary: false, slide_number: slide.slide_number, original_caption: slide.original_caption || '', post_id: slide.post_id || '', source_account: slide.source_account || '' };
-    }
-
-    // CONTENT VIDEO: render text block + video (cropped if competitor has text at top)
-    const vidW = dims.width;
-    const vidH = dims.height;
-    const cropY = Math.round(vidH * vtp);
-    const cropH = vidH - cropY;
-
+    // ── 4. Render AIMABOOSTING text block (380px tall)
     const textH = 380;
+    const videoH = 970; // 380 + 970 = 1350px = 4:5 Instagram format (1080×1350)
+
     const page = await sharedBrowser.newPage();
     await page.setViewport({ width: 1080, height: textH, deviceScaleFactor: 1 });
     await page.setContent(buildTextBlockHtml({
@@ -665,11 +652,9 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
     await page.close();
     fs.writeFileSync(textPngPath, textPngBuf);
 
-    // Crop competitor's text region from top (if vtp > 0.05), then vstack with our text block
-    const cropFilter = cropY > 20
-      ? `[1:v]crop=${vidW}:${cropH}:0:${cropY},scale=1080:-2,setsar=1[vid]`
-      : '[1:v]scale=1080:-2,setsar=1[vid]'; // vtp ≈ 0 → video is pure footage, no crop needed
-
+    // ── 5. FFmpeg: compose 1080×1350 output (4:5 Instagram)
+    // Text block (top 380px) + video footage (bottom 970px, filled — no black bars)
+    // force_original_aspect_ratio=increase + crop fills the 1080×970 box like Instagram does
     await new Promise((resolve, reject) => {
       ffmpeg()
         .input(textPngPath)
@@ -677,7 +662,7 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
         .input(videoPath)
         .complexFilter([
           `[0:v]scale=1080:${textH},setsar=1[txt]`,
-          cropFilter,
+          `[1:v]scale=1080:${videoH}:force_original_aspect_ratio=increase,crop=1080:${videoH},setsar=1[vid]`,
           '[txt][vid]vstack=inputs=2[out]',
         ])
         .outputOptions([
@@ -699,7 +684,7 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
         .run();
     });
 
-    // ── Step 6: Upload to Cloudinary
+    // ── 6. Upload to Cloudinary
     const cloudinaryUrl = await uploadVideoToCloudinary(fs.readFileSync(outputPath));
     cleanup();
 
