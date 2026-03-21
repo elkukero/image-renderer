@@ -564,14 +564,34 @@ app.post('/render-rebrand-batch', async (req, res) => {
 
 async function processVideoSlide(slide, openaiKey, sharedBrowser) {
   const tag = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-  const videoPath = path.join(os.tmpdir(), `vid_${tag}.mp4`);
+  const videoPath  = path.join(os.tmpdir(), `vid_${tag}.mp4`);
   const textPngPath = path.join(os.tmpdir(), `txt_${tag}.png`);
   const outputPath = path.join(os.tmpdir(), `out_${tag}.mp4`);
-  const framePath = path.join(os.tmpdir(), `frame_${tag}.jpg`);
-  const cleanup = () => [videoPath, textPngPath, outputPath, framePath].forEach(f => { try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (_) {} });
+  const framePath  = path.join(os.tmpdir(), `frame_${tag}.jpg`);
+  const cleanup = () => [videoPath, textPngPath, outputPath, framePath].forEach(f => {
+    try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (_) {}
+  });
 
   try {
-    // 1. Download video first — stream directly to disk to avoid loading into heap
+    // ── Step 1: Thumbnail → extract TEXT only (headline / body / bullets)
+    // The thumbnail shows the static layout of the slide with the competitor's text.
+    let extracted = { slide_type: 'content', layout: 'text_top', headline: null, body: null, bullets: null };
+    if (slide.slide_image_url) {
+      try {
+        const r = await fetch(slide.slide_image_url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.instagram.com/' } });
+        if (r.ok) {
+          const base64Thumb = Buffer.from(await r.arrayBuffer()).toString('base64');
+          extracted = await extractSlideContent(base64Thumb, openaiKey);
+        }
+      } catch (e) { console.error('Thumb/Vision error:', e.message); }
+    }
+    // Caption fallback if no text found
+    if (!extracted.headline && !extracted.body && !(extracted.bullets && extracted.bullets.length)) {
+      const caption = slide.original_caption || '';
+      extracted.body = caption.length > 200 ? caption.slice(0, 200).replace(/\s\S*$/, '...') : caption || null;
+    }
+
+    // ── Step 2: Download video — stream directly to disk (no heap OOM)
     const vr = await fetch(slide.slide_video_url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.instagram.com/' } });
     if (!vr.ok) throw new Error(`Video download failed: ${vr.status}`);
     await new Promise((resolve, reject) => {
@@ -585,24 +605,20 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
       pump();
     });
 
-    // 2. Get video dimensions + duration via ffprobe
+    // ── Step 3: ffprobe → dimensions + duration
     const dims = await new Promise((resolve) => {
       ffmpeg.ffprobe(videoPath, (err, meta) => {
         if (err) return resolve({ width: 1080, height: 1080, duration: 30 });
         const vs = (meta.streams || []).find(s => s.codec_type === 'video') || {};
-        resolve({
-          width: vs.width || 1080,
-          height: vs.height || 1080,
-          duration: meta.format?.duration || 30,
-        });
+        resolve({ width: vs.width || 1080, height: vs.height || 1080, duration: meta.format?.duration || 30 });
       });
     });
 
-    // 3. Extract first frame from video for accurate layout analysis
-    // (thumbnail/displayUrl often shows only the visual region, not the full layout with text overlay)
+    // ── Step 4: Extract frame at 30% into video (skips intro animations, shows stable layout)
+    const frameTs = Math.max(2, dims.duration * 0.3).toFixed(2);
     await new Promise((resolve) => {
       ffmpeg(videoPath)
-        .inputOptions(['-ss', '0.5'])
+        .inputOptions(['-ss', frameTs])
         .outputOptions(['-frames:v', '1', '-q:v', '3'])
         .output(framePath)
         .on('end', resolve)
@@ -610,54 +626,24 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
         .run();
     });
 
-    // 4. GPT Vision on first frame — detects actual layout (text region + visual region)
-    let extracted = { slide_type: 'content', layout: 'text_top', headline: null, body: null, bullets: null, visual_top_pct: null };
+    // ── Step 5: detectVisualRegion — focused GPT call: where does footage start?
+    // This is separate from text extraction — single purpose, single JSON field.
+    let vtp = 0.0; // visual_top_pct: fraction from top where footage begins
     let base64Frame = null;
     try { base64Frame = fs.readFileSync(framePath).toString('base64'); } catch (_) {}
-
     if (base64Frame) {
-      try { extracted = await extractSlideContent(base64Frame, openaiKey); } catch (e) { console.error('Vision error:', e.message); }
+      vtp = await detectVisualRegion(base64Frame, openaiKey);
+      console.log(`[video] vtp=${vtp} → cropping top ${Math.round(vtp * 100)}% (text/logo region)`);
     }
 
-    // 5. Caption fallback: if GPT Vision found no text, use original_caption
-    if (!extracted.headline && !extracted.body && !(extracted.bullets && extracted.bullets.length)) {
-      const caption = slide.original_caption || '';
-      const short = caption.length > 200 ? caption.slice(0, 200).replace(/\s\S*$/, '...') : caption;
-      extracted.body = short || null;
-      extracted.layout = extracted.layout || 'text_top';
-    }
-
-    const layout = extracted.layout || 'text_top';
-
-    // If pure text slide (no visual region) — skip video compositing, return as image
-    if (layout === 'text_full') {
-      cleanup();
-      const page = await sharedBrowser.newPage();
-      await page.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
-      await page.setContent(buildTextBlockHtml({ ...extracted, slide_number: slide.slide_number, total_slides: slide.total_slides, width: 1080, height: 1080 }), { waitUntil: 'networkidle2', timeout: 10000 });
-      const imgBuf = await page.screenshot({ type: 'jpeg', quality: 85, fullPage: false });
-      await page.close();
-      const imgbbKey = process.env.IMGBB_API_KEY;
-      const imageUrl = await uploadToImgbb(imgBuf, imgbbKey);
-      return { image_url: imageUrl, is_video: false, already_cloudinary: false, slide_number: slide.slide_number, original_caption: slide.original_caption || '', post_id: slide.post_id || '', source_account: slide.source_account || '' };
-    }
-
-    // 6. Calculate crop + text block dimensions
-    // visual_top_pct: where the visual content starts in the original frame
-    // Now detected from the actual video frame, not the thumbnail
-    const vtp = (typeof extracted.visual_top_pct === 'number' && extracted.visual_top_pct > 0.05)
-      ? extracted.visual_top_pct
-      : 0.0;
-
+    // ── Step 6: Calculate crop — cut out the competitor's text/logo region
     const vidW = dims.width;
     const vidH = dims.height;
-    const cropY = Math.round(vidH * vtp);   // pixels to skip from top (original text area)
-    const cropH = vidH - cropY;             // height of visual content in original
+    const cropY = Math.round(vidH * vtp);   // pixels to remove from top
+    const cropH = vidH - cropY;             // remaining footage height
 
-    // Text block height: proportional to cropped region, minimum 320px
-    const textH = Math.max(320, Math.round(1080 * (vtp > 0.05 ? vtp : 0.35)));
-
-    // 7. Render AIMABOOSTING text block as opaque PNG
+    // ── Step 7: Render AIMABOOSTING text block as opaque PNG (fixed 380px)
+    const textH = 380;
     const page = await sharedBrowser.newPage();
     await page.setViewport({ width: 1080, height: textH, deviceScaleFactor: 1 });
     await page.setContent(buildTextBlockHtml({
@@ -671,10 +657,11 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
     await page.close();
     fs.writeFileSync(textPngPath, textPngBuf);
 
-    // 8. FFmpeg: crop visual region from video + stack with text block PNG
-    const cropFilter = cropY > 10
+    // ── Step 8: FFmpeg — crop footage region + stack [text block] on top
+    // Works for any video format: square, vertical (9:16), horizontal — scale=1080:-2 handles aspect ratio
+    const cropFilter = cropY > 20
       ? `[1:v]crop=${vidW}:${cropH}:0:${cropY},scale=1080:-2,setsar=1[vid]`
-      : `[1:v]scale=1080:-2,setsar=1[vid]`;
+      : `[1:v]scale=1080:-2,setsar=1[vid]`; // vtp ≈ 0 → video is already pure footage, no crop needed
 
     await new Promise((resolve, reject) => {
       ffmpeg()
@@ -682,7 +669,7 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
         .inputOptions(['-loop 1'])
         .input(videoPath)
         .complexFilter([
-          '[0:v]scale=1080:-2,setsar=1[txt]',
+          `[0:v]scale=1080:${textH},setsar=1[txt]`,
           cropFilter,
           '[txt][vid]vstack=inputs=2[out]',
         ])
@@ -705,7 +692,7 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
         .run();
     });
 
-    // 9. Upload processed video to Cloudinary
+    // ── Step 9: Upload to Cloudinary
     const cloudinaryUrl = await uploadVideoToCloudinary(fs.readFileSync(outputPath));
     cleanup();
 
@@ -876,6 +863,57 @@ function buildVideoOverlayHtml(data) {
     </div>
   </div>
 </body></html>`;
+}
+
+// Focused single-task function: detect where actual footage starts in a video frame.
+// Returns a decimal 0.0-1.0 (e.g. 0.55 = footage starts at 55% from the top).
+// Used ONLY for video cropping — not for text extraction.
+async function detectVisualRegion(base64Frame, openaiKey) {
+  try {
+    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openaiKey}` },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        max_tokens: 60,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: `This is a frame from an Instagram video. The video may have a text/logo/branding region at the top and actual video footage (a real photo or video scene) at the bottom.
+
+Your task: find the Y position (as a fraction 0.0-1.0 from the top) where the REAL FOOTAGE begins and the text/branding overlay ends.
+
+Return ONLY valid JSON, no markdown:
+{ "visual_start_pct": 0.0 }
+
+Examples:
+- Footage fills the whole frame → 0.0
+- Text/logo in top 50%, footage in bottom 50% → 0.5
+- Text/logo in top 60%, footage in bottom 40% → 0.6
+- Large text animation with tiny footage strip at bottom → 0.85
+
+Be precise. Look for where colors/textures transition from text/branding to real-world imagery.`,
+            },
+            {
+              type: 'image_url',
+              image_url: { url: `data:image/jpeg;base64,${base64Frame}`, detail: 'high' },
+            },
+          ],
+        }],
+      }),
+    });
+    const data = await resp.json();
+    const raw = data.choices?.[0]?.message?.content || '{"visual_start_pct":0.0}';
+    const clean = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    const parsed = JSON.parse(clean);
+    const val = typeof parsed.visual_start_pct === 'number' ? parsed.visual_start_pct : 0.0;
+    return Math.min(Math.max(val, 0.0), 0.95); // clamp 0-0.95
+  } catch (e) {
+    console.error('detectVisualRegion error:', e.message);
+    return 0.0;
+  }
 }
 
 async function extractSlideContent(base64Image, openaiKey) {
