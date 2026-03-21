@@ -719,12 +719,12 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
 async function uploadVideoToCloudinary(videoBuffer) {
   const cloudName = process.env.CLOUDINARY_CLOUD_NAME || 'drg0uit7h';
   const preset = process.env.CLOUDINARY_UPLOAD_PRESET || 'ml_default';
-  const base64 = videoBuffer.toString('base64');
-  const body = new URLSearchParams({ file: `data:video/mp4;base64,${base64}`, upload_preset: preset });
+  const formData = new FormData();
+  formData.append('file', new Blob([videoBuffer], { type: 'video/mp4' }), 'video.mp4');
+  formData.append('upload_preset', preset);
   const resp = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/video/upload`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
+    body: formData,
   });
   const data = await resp.json();
   if (!data.secure_url) throw new Error(`Cloudinary video upload failed: ${JSON.stringify(data.error || data)}`);
