@@ -447,13 +447,18 @@ app.post('/render-rebrand-batch', async (req, res) => {
     const results = [];
     for (const slide of slides) {
       // Video slides: FFmpeg processing — rebrand the actual video
-      if (slide.is_video && slide.slide_video_url) {
+      // Fallback: old queue data stored videoUrl in slide_image_url when is_video=true
+      const effectiveVideoUrl = slide.slide_video_url ||
+        (slide.is_video ? slide.slide_image_url : null);
+      const effectiveThumbUrl = slide.slide_video_url ? slide.slide_image_url : null;
+      if (slide.is_video && effectiveVideoUrl) {
+        const slideForVideo = { ...slide, slide_video_url: effectiveVideoUrl, slide_image_url: effectiveThumbUrl };
         try {
-          const result = await processVideoSlide(slide, openaiKey, browser);
+          const result = await processVideoSlide(slideForVideo, openaiKey, browser);
           results.push(result);
         } catch (e) {
           console.error('Video processing error:', e.message);
-          // Fallback: render thumbnail as branded image
+          // Fallback: render as branded image
           results.push({
             image_url: slide.slide_image_url,
             is_video: false,
