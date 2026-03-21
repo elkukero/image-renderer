@@ -1225,5 +1225,196 @@ function buildRebrandHtml(slideImageUrl, slideNumber, totalSlides) {
 </html>`;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /render-generate-batch
+// Generates AIMABOOSTING slides from pre-generated GPT content + Pexels media.
+// No GPT Vision needed — content already structured by n8n before calling.
+// ─────────────────────────────────────────────────────────────────────────────
+app.post('/render-generate-batch', async (req, res) => {
+  const { slides } = req.body;
+  if (!Array.isArray(slides) || slides.length === 0) {
+    return res.status(400).json({ error: 'Missing required field: slides (array)' });
+  }
+  if (!process.env.IMGBB_API_KEY) return res.status(500).json({ error: 'IMGBB_API_KEY not set' });
+
+  let browser;
+  try {
+    browser = await puppeteer.launch({
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    });
+
+    const results = [];
+    for (const slide of slides) {
+      try {
+        const result = await handleGeneratedSlide(slide, browser);
+        results.push(result);
+      } catch (e) {
+        console.error(`[generate-batch] slide ${slide.slide_number} error:`, e.message);
+        // Fallback: render pure text slide
+        try {
+          const pg = await browser.newPage();
+          await pg.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
+          await pg.setContent(buildSlideFromContent({
+            slide_type: 'text', has_image: false,
+            headline: slide.headline || null,
+            body: slide.body || null,
+            bullets: slide.bullets || null,
+            slide_number: slide.slide_number || 1,
+            total_slides: slide.total_slides || slides.length,
+            imageUrl: null,
+          }), { waitUntil: 'networkidle2', timeout: 15000 });
+          const buf = await pg.screenshot({ type: 'jpeg', quality: 85, fullPage: false });
+          await pg.close();
+          const url = await uploadToImgbb(buf, process.env.IMGBB_API_KEY);
+          results.push({ image_url: url, is_video: false, slide_number: slide.slide_number || 1 });
+        } catch (fe) {
+          console.error(`[generate-batch] fallback slide ${slide.slide_number} error:`, fe.message);
+          results.push({ image_url: null, is_video: false, slide_number: slide.slide_number || 1 });
+        }
+      }
+    }
+
+    await browser.close();
+    browser = null;
+    res.json({ success: true, images: results });
+  } catch (err) {
+    console.error('[generate-batch] fatal error:', err.message);
+    if (browser) await browser.close();
+    res.status(500).json({ error: err.message });
+  }
+});
+
+async function handleGeneratedSlide(slide, browser) {
+  const {
+    slide_type, headline, subheadline, body, bullets,
+    image_base64, video_url,
+    slide_number = 1, total_slides = 1,
+  } = slide;
+
+  console.log(`[generate] slide ${slide_number} type=${slide_type} image=${!!image_base64} video=${!!video_url}`);
+
+  // VIDEO slide: AIMABOOSTING text block (380px) + Pexels video (970px) stacked
+  if (slide_type === 'video' && video_url) {
+    return await renderPexelsVideoSlide({ slide, browser });
+  }
+
+  // COVER or CONTENT with image
+  if ((slide_type === 'cover' || slide_type === 'content') && image_base64) {
+    const imageUrl = `data:image/jpeg;base64,${image_base64}`;
+    const pg = await browser.newPage();
+    await pg.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
+    await pg.setContent(buildSlideFromContent({
+      slide_type, has_image: true, headline, subheadline, body, bullets,
+      slide_number, total_slides, imageUrl,
+    }), { waitUntil: 'networkidle2', timeout: 15000 });
+    const buf = await pg.screenshot({ type: 'jpeg', quality: 87, fullPage: false });
+    await pg.close();
+    const url = await uploadToImgbb(buf, process.env.IMGBB_API_KEY);
+    return { image_url: url, is_video: false, slide_number };
+  }
+
+  // TEXT slide (or any slide missing media): pure dark layout
+  const pg = await browser.newPage();
+  await pg.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
+  await pg.setContent(buildSlideFromContent({
+    slide_type: slide_type || 'text', has_image: false,
+    headline, subheadline, body, bullets,
+    slide_number, total_slides, imageUrl: null,
+  }), { waitUntil: 'networkidle2', timeout: 15000 });
+  const buf = await pg.screenshot({ type: 'jpeg', quality: 87, fullPage: false });
+  await pg.close();
+  const url = await uploadToImgbb(buf, process.env.IMGBB_API_KEY);
+  return { image_url: url, is_video: false, slide_number };
+}
+
+async function renderPexelsVideoSlide({ slide, browser }) {
+  const tag = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const videoPath  = path.join(os.tmpdir(), `pvid_${tag}.mp4`);
+  const textPath   = path.join(os.tmpdir(), `ptxt_${tag}.png`);
+  const outputPath = path.join(os.tmpdir(), `pout_${tag}.mp4`);
+  const cleanup = () => [videoPath, textPath, outputPath].forEach(f => {
+    try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (_) {}
+  });
+
+  try {
+    // 1. Download Pexels video
+    console.log(`[pexels-video] downloading: ${slide.video_url}`);
+    const vr = await fetch(slide.video_url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    if (!vr.ok) throw new Error(`Pexels video download failed: ${vr.status}`);
+    fs.writeFileSync(videoPath, Buffer.from(await vr.arrayBuffer()));
+
+    // 2. Get video duration
+    const { duration } = await new Promise(resolve => {
+      ffmpeg.ffprobe(videoPath, (err, meta) => {
+        if (err) return resolve({ duration: 15 });
+        resolve({ duration: Math.min(meta.format?.duration || 15, 60) });
+      });
+    });
+    console.log(`[pexels-video] duration=${duration}s`);
+
+    // 3. Render AIMABOOSTING text block (380px tall)
+    const textH = 380;
+    const pg = await browser.newPage();
+    await pg.setViewport({ width: 1080, height: textH, deviceScaleFactor: 1 });
+    await pg.setContent(buildTextBlockHtml({
+      headline: slide.headline,
+      subheadline: slide.subheadline,
+      body: slide.body,
+      bullets: slide.bullets,
+      slide_number: slide.slide_number,
+      total_slides: slide.total_slides,
+      width: 1080,
+      height: textH,
+    }), { waitUntil: 'networkidle2', timeout: 10000 });
+    const textPng = await pg.screenshot({ type: 'png', fullPage: false });
+    await pg.close();
+    fs.writeFileSync(textPath, textPng);
+
+    // 4. FFmpeg: text block (380px) stacked above video (970px) = 1080×1350 (4:5)
+    const videoH = 970;
+    await new Promise((resolve, reject) => {
+      ffmpeg()
+        .input(textPath).inputOptions(['-loop 1'])
+        .input(videoPath)
+        .complexFilter([
+          `[0:v]scale=1080:${textH},setsar=1[txt]`,
+          `[1:v]scale=1080:${videoH}:force_original_aspect_ratio=increase,crop=1080:${videoH},setsar=1[vid]`,
+          '[txt][vid]vstack=inputs=2[out]',
+        ])
+        .outputOptions([
+          '-map [out]',
+          '-map 1:a?',
+          '-t', String(duration),
+          '-c:v libx264',
+          '-preset ultrafast',
+          '-crf 28',
+          '-pix_fmt yuv420p',
+          '-movflags +faststart',
+          '-threads 1',
+          '-bufsize 512k',
+          '-maxrate 2M',
+        ])
+        .output(outputPath)
+        .on('end', resolve)
+        .on('error', reject)
+        .run();
+    });
+
+    // 5. Upload to Cloudinary
+    const cloudUrl = await uploadVideoToCloudinary(fs.readFileSync(outputPath));
+    cleanup();
+    console.log(`[pexels-video] done: ${cloudUrl}`);
+    return {
+      image_url: cloudUrl,
+      is_video: true,
+      already_cloudinary: true,
+      slide_number: slide.slide_number,
+    };
+  } catch (e) {
+    cleanup();
+    throw e;
+  }
+}
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Image renderer running on port ${PORT}`));
