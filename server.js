@@ -548,9 +548,9 @@ app.post('/render-rebrand-batch', async (req, res) => {
 async function processVideoSlide(slide, openaiKey, sharedBrowser) {
   const tag = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
   const videoPath = path.join(os.tmpdir(), `vid_${tag}.mp4`);
-  const overlayPath = path.join(os.tmpdir(), `ovl_${tag}.png`);
+  const textPngPath = path.join(os.tmpdir(), `txt_${tag}.png`);
   const outputPath = path.join(os.tmpdir(), `out_${tag}.mp4`);
-  const cleanup = () => [videoPath, overlayPath, outputPath].forEach(f => { try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (_) {} });
+  const cleanup = () => [videoPath, textPngPath, outputPath].forEach(f => { try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (_) {} });
 
   try {
     // 1. Download thumbnail for GPT Vision extraction
@@ -561,19 +561,17 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
     } catch (e) { console.error('Thumb dl error:', e.message); }
 
     // 2. Extract text content from thumbnail
-    let extracted = { slide_type: 'content', has_image: true, headline: null, body: null, bullets: null };
+    let extracted = { slide_type: 'content', layout: 'text_top', headline: null, body: null, bullets: null, visual_top_pct: null };
     if (base64Thumb) {
       try { extracted = await extractSlideContent(base64Thumb, openaiKey); } catch (e) { console.error('Vision error:', e.message); }
     }
 
-    // Fallback: if GPT Vision found no text (video thumbnail is just a video frame
-    // with no text overlay), use the post's original caption as body text
-    if (!extracted.headline && !extracted.body && !extracted.bullets) {
+    // Caption fallback: if GPT Vision found no text, use original_caption
+    if (!extracted.headline && !extracted.body && !(extracted.bullets && extracted.bullets.length)) {
       const caption = slide.original_caption || '';
-      // Take first 200 chars of caption as body, trimmed at last space
       const short = caption.length > 200 ? caption.slice(0, 200).replace(/\s\S*$/, '...') : caption;
       extracted.body = short || null;
-      extracted.layout = 'text_top';
+      extracted.layout = extracted.layout || 'text_top';
     }
 
     // 3. Download actual video
@@ -581,36 +579,96 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
     if (!vr.ok) throw new Error(`Video download failed: ${vr.status}`);
     fs.writeFileSync(videoPath, Buffer.from(await vr.arrayBuffer()));
 
-    // 4. Get video dimensions via ffprobe
+    // 4. Get video dimensions + duration via ffprobe
     const dims = await new Promise((resolve) => {
       ffmpeg.ffprobe(videoPath, (err, meta) => {
-        if (err) return resolve({ width: 1080, height: 1080 });
+        if (err) return resolve({ width: 1080, height: 1080, duration: 30 });
         const vs = (meta.streams || []).find(s => s.codec_type === 'video') || {};
-        resolve({ width: vs.width || 1080, height: vs.height || 1080 });
+        resolve({
+          width: vs.width || 1080,
+          height: vs.height || 1080,
+          duration: meta.format?.duration || 30,
+        });
       });
     });
 
-    // 5. Render AIMABOOSTING overlay PNG via Puppeteer
-    const page = await sharedBrowser.newPage();
-    await page.setViewport({ width: dims.width, height: dims.height, deviceScaleFactor: 1 });
-    await page.setContent(buildVideoOverlayHtml({ ...extracted, slide_number: slide.slide_number, total_slides: slide.total_slides, width: dims.width, height: dims.height }), { waitUntil: 'networkidle2', timeout: 15000 });
-    const overlayBuf = await page.screenshot({ type: 'png', omitBackground: true, fullPage: false });
-    await page.close();
-    fs.writeFileSync(overlayPath, overlayBuf);
+    const layout = extracted.layout || 'text_top';
 
-    // 6. FFmpeg: composite AIMABOOSTING overlay on original video
+    // If pure text slide (no visual region) — skip video compositing, return as image
+    if (layout === 'text_full') {
+      cleanup();
+      // Render as branded text image instead
+      const page = await sharedBrowser.newPage();
+      await page.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
+      await page.setContent(buildTextBlockHtml({ ...extracted, slide_number: slide.slide_number, total_slides: slide.total_slides, width: 1080, height: 1080 }), { waitUntil: 'networkidle2', timeout: 10000 });
+      const imgBuf = await page.screenshot({ type: 'jpeg', quality: 85, fullPage: false });
+      await page.close();
+      const imgbbKey = process.env.IMGBB_API_KEY;
+      const imageUrl = await uploadToImgbb(imgBuf, imgbbKey);
+      return { image_url: imageUrl, is_video: false, already_cloudinary: false, slide_number: slide.slide_number, original_caption: slide.original_caption || '', post_id: slide.post_id || '', source_account: slide.source_account || '' };
+    }
+
+    // 5. Calculate crop + text block dimensions
+    // visual_top_pct: where the visual content starts in the original frame (0 = whole video is visual)
+    const defaultVtp = layout === 'text_bottom' ? 0.0 : 0.0; // for pure video children, assume full frame is visual
+    const vtp = (typeof extracted.visual_top_pct === 'number' && extracted.visual_top_pct > 0.05)
+      ? extracted.visual_top_pct
+      : defaultVtp;
+
+    const vidW = dims.width;
+    const vidH = dims.height;
+    const cropY = Math.round(vidH * vtp);   // pixels to skip from top (original text area)
+    const cropH = vidH - cropY;             // height of visual content in original
+
+    // Text block height: proportional to video, minimum 320px
+    const textH = Math.max(320, Math.round(1080 * (vtp > 0.05 ? vtp : 0.35)));
+
+    // 6. Render AIMABOOSTING text block as opaque PNG
+    const page = await sharedBrowser.newPage();
+    await page.setViewport({ width: 1080, height: textH, deviceScaleFactor: 1 });
+    await page.setContent(buildTextBlockHtml({
+      ...extracted,
+      slide_number: slide.slide_number,
+      total_slides: slide.total_slides,
+      width: 1080,
+      height: textH,
+    }), { waitUntil: 'networkidle2', timeout: 10000 });
+    const textPngBuf = await page.screenshot({ type: 'png', fullPage: false });
+    await page.close();
+    fs.writeFileSync(textPngPath, textPngBuf);
+
+    // 7. FFmpeg: crop visual region from video + stack with text block PNG
+    const cropFilter = cropY > 10
+      ? `[1:v]crop=${vidW}:${cropH}:0:${cropY},scale=1080:-2,setsar=1[vid]`
+      : `[1:v]scale=1080:-2,setsar=1[vid]`;
+
     await new Promise((resolve, reject) => {
-      ffmpeg(videoPath)
-        .input(overlayPath)
-        .complexFilter('[0:v][1:v]overlay=0:0[outv]')
-        .outputOptions(['-map [outv]', '-map 0:a?', '-c:v libx264', '-c:a copy', '-preset fast', '-crf 23', '-movflags +faststart'])
+      ffmpeg()
+        .input(textPngPath)
+        .inputOptions(['-loop 1'])
+        .input(videoPath)
+        .complexFilter([
+          '[0:v]scale=1080:-2,setsar=1[txt]',
+          cropFilter,
+          '[txt][vid]vstack=inputs=2[out]',
+        ])
+        .outputOptions([
+          '-map [out]',
+          '-map 1:a?',
+          '-t', String(dims.duration),
+          '-c:v libx264',
+          '-preset fast',
+          '-crf 23',
+          '-pix_fmt yuv420p',
+          '-movflags +faststart',
+        ])
         .output(outputPath)
         .on('end', resolve)
         .on('error', reject)
         .run();
     });
 
-    // 7. Upload processed video to Cloudinary
+    // 8. Upload processed video to Cloudinary
     const cloudinaryUrl = await uploadVideoToCloudinary(fs.readFileSync(outputPath));
     cleanup();
 
@@ -644,6 +702,49 @@ async function uploadVideoToCloudinary(videoBuffer) {
   return data.secure_url;
 }
 
+function buildTextBlockHtml({ headline, subheadline, body, bullets, slide_number = 1, total_slides = 1, width = 1080, height = 380 }) {
+  const esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const counter = `${slide_number}/${total_slides}`;
+  const hlText = headline || '';
+  const hlSize = hlText.length > 80 ? 26 : hlText.length > 60 ? 30 : hlText.length > 40 ? 36 : hlText.length > 20 ? 42 : 48;
+  const hasBullets = Array.isArray(bullets) && bullets.length > 0;
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:${width}px; height:${height}px; background:#07080f; overflow:hidden; font-family:system-ui,-apple-system,Arial,sans-serif; color:#fff; }
+  .grid { position:absolute; inset:0; background-image:linear-gradient(rgba(108,99,255,0.06) 1px,transparent 1px),linear-gradient(90deg,rgba(108,99,255,0.06) 1px,transparent 1px); background-size:54px 54px; }
+  .topbar { position:absolute; top:0; left:0; right:0; height:4px; background:linear-gradient(90deg,#6c63ff,#00d4ff,#6c63ff); }
+  .bottombar { position:absolute; bottom:0; left:0; right:0; height:3px; background:linear-gradient(90deg,#6c63ff,#00d4ff); }
+  .header { position:absolute; top:18px; left:36px; right:36px; display:flex; align-items:center; justify-content:space-between; }
+  .logo { font-size:22px; font-weight:900; letter-spacing:-0.04em; }
+  .logo .aima { color:#fff; } .logo .boost { color:#6c63ff; }
+  .counter { font-size:13px; font-weight:700; color:rgba(255,255,255,0.35); letter-spacing:0.08em; }
+  .content { position:absolute; top:62px; left:36px; right:36px; bottom:16px; display:flex; flex-direction:column; justify-content:center; gap:12px; }
+  .accent { width:44px; height:4px; background:linear-gradient(90deg,#6c63ff,#00d4ff); border-radius:2px; }
+  .hl { font-size:${hlSize}px; font-weight:900; line-height:1.12; letter-spacing:-0.02em; color:#fff; }
+  .sub { font-size:17px; font-weight:600; color:#6c63ff; line-height:1.4; }
+  .body-text { font-size:16px; color:rgba(255,255,255,0.78); line-height:1.6; }
+  .bullets { list-style:none; display:flex; flex-direction:column; gap:8px; }
+  .bullets li { display:flex; align-items:flex-start; gap:10px; font-size:16px; color:rgba(255,255,255,0.85); line-height:1.4; }
+  .bullets li::before { content:''; display:block; min-width:8px; height:8px; border-radius:50%; background:#6c63ff; margin-top:5px; flex-shrink:0; }
+</style></head><body>
+  <div class="grid"></div>
+  <div class="topbar"></div>
+  <div class="bottombar"></div>
+  <div class="header">
+    <div class="logo"><span class="aima">AIMA</span><span class="boost">BOOSTING</span></div>
+    <div class="counter">${esc(counter)}</div>
+  </div>
+  <div class="content">
+    <div class="accent"></div>
+    ${headline ? `<h2 class="hl">${esc(headline)}</h2>` : ''}
+    ${subheadline ? `<p class="sub">${esc(subheadline)}</p>` : ''}
+    ${hasBullets ? `<ul class="bullets">${bullets.map(b => `<li>${esc(b)}</li>`).join('')}</ul>` : ''}
+    ${body && !hasBullets ? `<p class="body-text">${esc(body)}</p>` : ''}
+  </div>
+</body></html>`;
+}
+
+// buildVideoOverlayHtml kept for text_full / visual_full edge cases
 function buildVideoOverlayHtml(data) {
   const { headline, subheadline, body, bullets, layout = 'text_top', slide_number = 1, total_slides = 1, width = 1080, height = 1080 } = data;
   const esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -767,6 +868,10 @@ Return ONLY valid JSON (no markdown) with these fields:
 - bullets: array of bullet/list items if present, each item COMPLETE (array or null)
 - stat_number: prominent number or percentage (string or null)
 - stat_label: label for the stat (string or null)
+- visual_top_pct: decimal 0.0-1.0 indicating where the visual/video content region starts from the top of the frame.
+  Use 0.0 if the visual fills the whole frame (no text block above it).
+  Use ~0.33 if there is a text/branding block in the top ~33% and the visual is in the remaining lower portion.
+  Use null only if layout is "text_full" (no visual area at all).
 
 RULES:
 1. Extract body/bullets text COMPLETELY — include the full prompt, all sentences, every word
