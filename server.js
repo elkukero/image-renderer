@@ -7,7 +7,7 @@ const os = require('os');
 // ffmpeg is installed as a system package via nixpacks.toml — no path override needed
 
 const app = express();
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '20mb' }));
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
@@ -483,23 +483,27 @@ app.post('/render-rebrand-batch', async (req, res) => {
         continue;
       }
 
-      // 1. Download image/video-thumbnail as base64
-      let base64Image = null;
-      try {
-        const imgResp = await fetch(slide.slide_image_url, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Referer': 'https://www.instagram.com/',
-            'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-          },
-        });
-        if (imgResp.ok) {
-          const buf = Buffer.from(await imgResp.arrayBuffer());
-          base64Image = buf.toString('base64');
+      // 1. Use pre-downloaded base64 from n8n (sent while Apify URL was fresh).
+      //    Fallback: try fetching the URL directly (may fail if CDN expired).
+      let base64Image = slide.slide_image_base64 || null;
+      if (!base64Image && slide.slide_image_url) {
+        try {
+          const imgResp = await fetch(slide.slide_image_url, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Referer': 'https://www.instagram.com/',
+              'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+            },
+          });
+          if (imgResp.ok) {
+            const buf = Buffer.from(await imgResp.arrayBuffer());
+            base64Image = buf.toString('base64');
+          }
+        } catch (e) {
+          console.error('Image download error:', e.message);
         }
-      } catch (e) {
-        console.error('Image download error:', e.message);
       }
+      console.log(`[slide ${slide.slide_number}] base64Image=${base64Image ? 'yes (' + Math.round(base64Image.length/1024) + 'KB)' : 'null'}`);
 
       // 2. Extract content with GPT-4o Vision
       let extracted = {};
@@ -586,18 +590,18 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
   });
 
   try {
-    // ── 1. Download thumbnail → base64 (kept for both GPT analysis AND cover render)
-    // Using base64 data URL avoids Puppeteer failing to load Instagram CDN URLs in Railway.
-    let base64Thumb = null;
+    // ── 1. Get thumbnail base64 — use pre-downloaded from n8n first (URL is still fresh there)
+    let base64Thumb = slide.slide_image_base64 || null;
     let extracted = { slide_type: 'content', layout: 'text_top', headline: null, body: null, bullets: null, visual_top_pct: null };
-    if (slide.slide_image_url) {
+    if (!base64Thumb && slide.slide_image_url) {
       try {
         const r = await fetch(slide.slide_image_url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.instagram.com/' } });
-        if (r.ok) {
-          base64Thumb = Buffer.from(await r.arrayBuffer()).toString('base64');
-          extracted = await extractSlideContent(base64Thumb, openaiKey);
-        }
-      } catch (e) { console.error('Thumb/Vision error:', e.message); }
+        if (r.ok) base64Thumb = Buffer.from(await r.arrayBuffer()).toString('base64');
+      } catch (e) { console.error('Thumb fetch fallback error:', e.message); }
+    }
+    if (base64Thumb) {
+      try { extracted = await extractSlideContent(base64Thumb, openaiKey); }
+      catch (e) { console.error('Vision error:', e.message); }
     }
     if (!extracted.headline && !extracted.body && !(extracted.bullets && extracted.bullets.length)) {
       const cap = slide.original_caption || '';
