@@ -641,9 +641,13 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
     // ── 4. Crop: use visual_top_pct from thumbnail analysis to cut out competitor's text region
     // The thumbnail (static layout image) shows exactly where their text ends and footage begins.
     // GPT returns visual_top_pct ≈ 0.35 if their text occupies top 35% of the frame.
+    // When the thumbnail shows only footage (no text visible), GPT returns 0.0 — but the
+    // actual video still has competitor branding baked into the top portion. Default to 0.33
+    // so we always crop roughly the top third (where competitor text/logo lives) and replace
+    // it with our AIMABOOSTING text block. If GPT detects a real value, that takes priority.
     const vtp = (typeof extracted.visual_top_pct === 'number' && extracted.visual_top_pct > 0.05)
       ? Math.min(extracted.visual_top_pct, 0.8)
-      : 0.0;
+      : 0.33;
     const vidW = dims.width;
     const vidH = dims.height;
     const cropY = Math.round(vidH * vtp);
