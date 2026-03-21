@@ -572,13 +572,15 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
   });
 
   try {
-    // ── 1. Extract text from thumbnail (for our branded text block)
-    let extracted = { slide_type: 'content', layout: 'text_top', headline: null, body: null, bullets: null };
+    // ── 1. Download thumbnail → base64 (kept for both GPT analysis AND cover render)
+    // Using base64 data URL avoids Puppeteer failing to load Instagram CDN URLs in Railway.
+    let base64Thumb = null;
+    let extracted = { slide_type: 'content', layout: 'text_top', headline: null, body: null, bullets: null, visual_top_pct: null };
     if (slide.slide_image_url) {
       try {
         const r = await fetch(slide.slide_image_url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.instagram.com/' } });
         if (r.ok) {
-          const base64Thumb = Buffer.from(await r.arrayBuffer()).toString('base64');
+          base64Thumb = Buffer.from(await r.arrayBuffer()).toString('base64');
           extracted = await extractSlideContent(base64Thumb, openaiKey);
         }
       } catch (e) { console.error('Thumb/Vision error:', e.message); }
@@ -589,20 +591,21 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
     }
 
     // ── 2. COVER CHECK — slide 1 of any carousel is always the cover.
-    // Also cover if GPT detected cover/text_bottom layout (image on top, text below).
-    // Cover → render as IMAGE: thumbnail as photo background + our big text at bottom.
+    // Also cover if GPT detected cover/text_bottom layout (image top, text bottom).
     const isCover = slide.slide_number === 1
       || extracted.slide_type === 'cover'
       || extracted.layout === 'text_bottom';
 
     if (isCover) {
+      // Use base64 data URL so Puppeteer can render the image without hitting Instagram CDN
+      const imageDataUrl = base64Thumb ? `data:image/jpeg;base64,${base64Thumb}` : null;
       const coverPage = await sharedBrowser.newPage();
       await coverPage.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
       await coverPage.setContent(buildSlideFromContent({
         ...extracted,
         slide_type: 'cover',
-        has_image: !!(slide.slide_image_url),
-        imageUrl: slide.slide_image_url || null,
+        has_image: !!imageDataUrl,
+        imageUrl: imageDataUrl,
         slide_number: slide.slide_number,
         total_slides: slide.total_slides,
       }), { waitUntil: 'networkidle2', timeout: 15000 });
@@ -613,7 +616,7 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
       return { image_url: imageUrl, is_video: false, already_cloudinary: false, slide_number: slide.slide_number, original_caption: slide.original_caption || '', post_id: slide.post_id || '', source_account: slide.source_account || '' };
     }
 
-    // ── 3. CONTENT VIDEO — download and compose: [text block] + [video footage]
+    // ── 3. CONTENT VIDEO — download and compose
     const vr = await fetch(slide.slide_video_url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.instagram.com/' } });
     if (!vr.ok) throw new Error(`Video download failed: ${vr.status}`);
     await new Promise((resolve, reject) => {
@@ -629,15 +632,27 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
 
     const dims = await new Promise((resolve) => {
       ffmpeg.ffprobe(videoPath, (err, meta) => {
-        if (err) return resolve({ duration: 30 });
+        if (err) return resolve({ width: 1080, height: 1080, duration: 30 });
         const vs = (meta.streams || []).find(s => s.codec_type === 'video') || {};
-        resolve({ duration: meta.format?.duration || 30 });
+        resolve({ width: vs.width || 1080, height: vs.height || 1080, duration: meta.format?.duration || 30 });
       });
     });
 
-    // ── 4. Render AIMABOOSTING text block (380px tall)
+    // ── 4. Crop: use visual_top_pct from thumbnail analysis to cut out competitor's text region
+    // The thumbnail (static layout image) shows exactly where their text ends and footage begins.
+    // GPT returns visual_top_pct ≈ 0.35 if their text occupies top 35% of the frame.
+    const vtp = (typeof extracted.visual_top_pct === 'number' && extracted.visual_top_pct > 0.05)
+      ? Math.min(extracted.visual_top_pct, 0.8)
+      : 0.0;
+    const vidW = dims.width;
+    const vidH = dims.height;
+    const cropY = Math.round(vidH * vtp);
+    const cropH = vidH - cropY;
+    console.log(`[video] vtp=${vtp} cropY=${cropY}/${vidH} duration=${dims.duration}s`);
+
+    // ── 5. Render AIMABOOSTING text block (380px)
     const textH = 380;
-    const videoH = 970; // 380 + 970 = 1350px = 4:5 Instagram format (1080×1350)
+    const videoH = 970; // total = 380+970 = 1350px (4:5 Instagram)
 
     const page = await sharedBrowser.newPage();
     await page.setViewport({ width: 1080, height: textH, deviceScaleFactor: 1 });
@@ -652,9 +667,13 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
     await page.close();
     fs.writeFileSync(textPngPath, textPngBuf);
 
-    // ── 5. FFmpeg: compose 1080×1350 output (4:5 Instagram)
-    // Text block (top 380px) + video footage (bottom 970px, filled — no black bars)
-    // force_original_aspect_ratio=increase + crop fills the 1080×970 box like Instagram does
+    // ── 6. FFmpeg: [text block 380px] + [footage 970px filled, no black bars] = 1080×1350
+    // If vtp > 0: crop out competitor's text region first, then fill 970px
+    // If vtp = 0: video is pure footage, just fill 970px
+    const vidCropFilter = cropY > 20
+      ? `[1:v]crop=${vidW}:${cropH}:0:${cropY},scale=1080:${videoH}:force_original_aspect_ratio=increase,crop=1080:${videoH},setsar=1[vid]`
+      : `[1:v]scale=1080:${videoH}:force_original_aspect_ratio=increase,crop=1080:${videoH},setsar=1[vid]`;
+
     await new Promise((resolve, reject) => {
       ffmpeg()
         .input(textPngPath)
@@ -662,7 +681,7 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
         .input(videoPath)
         .complexFilter([
           `[0:v]scale=1080:${textH},setsar=1[txt]`,
-          `[1:v]scale=1080:${videoH}:force_original_aspect_ratio=increase,crop=1080:${videoH},setsar=1[vid]`,
+          vidCropFilter,
           '[txt][vid]vstack=inputs=2[out]',
         ])
         .outputOptions([
@@ -760,153 +779,6 @@ function buildTextBlockHtml({ headline, subheadline, body, bullets, slide_number
 </body></html>`;
 }
 
-// buildVideoOverlayHtml kept for text_full / visual_full edge cases
-function buildVideoOverlayHtml(data) {
-  const { headline, subheadline, body, bullets, layout = 'text_top', slide_number = 1, total_slides = 1, width = 1080, height = 1080 } = data;
-  const esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-  const counter = `${slide_number}/${total_slides}`;
-  const hlText = headline || '';
-  const hlSize = hlText.length > 80 ? 26 : hlText.length > 60 ? 30 : hlText.length > 40 ? 36 : hlText.length > 20 ? 42 : 48;
-  const hasBullets = Array.isArray(bullets) && bullets.length > 0;
-
-  // Determine overlay zone based on detected layout
-  // text_top: our branding covers the top ~55%
-  // text_bottom: our branding covers the bottom ~55%
-  // text_full: full overlay (pure text slide, no visual area)
-  // visual_full: thin bars top+bottom only
-  const isBottom = layout === 'text_bottom';
-  const isFull = layout === 'text_full';
-  const isThin = layout === 'visual_full';
-
-  const overlayPct = isFull ? 1.0 : isThin ? 0 : 0.55;
-  const overlayH = Math.round(height * overlayPct);
-  const thinBarH = Math.round(height * 0.12); // for visual_full: small bars only
-
-  if (isThin) {
-    return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-  * { margin:0; padding:0; box-sizing:border-box; }
-  html, body { width:${width}px; height:${height}px; background:transparent; overflow:hidden; font-family:system-ui,-apple-system,Arial,sans-serif; color:#fff; }
-  .bar-top { position:absolute; top:0; left:0; width:100%; height:${thinBarH}px; background:linear-gradient(180deg,#07080f 0%,#07080f 70%,rgba(7,8,15,0) 100%); }
-  .bar-bottom { position:absolute; bottom:0; left:0; width:100%; height:${thinBarH}px; background:linear-gradient(0deg,#07080f 0%,#07080f 70%,rgba(7,8,15,0) 100%); }
-  .topbar { position:absolute; top:0; left:0; right:0; height:4px; background:linear-gradient(90deg,#6c63ff,#00d4ff,#6c63ff); }
-  .header { position:absolute; top:10px; left:36px; right:36px; display:flex; align-items:center; justify-content:space-between; }
-  .logo { font-size:20px; font-weight:900; letter-spacing:-0.04em; }
-  .logo .aima { color:#fff; } .logo .boost { color:#6c63ff; }
-  .counter { font-size:12px; font-weight:700; color:rgba(255,255,255,0.35); letter-spacing:0.08em; }
-  .bottombar { position:absolute; bottom:0; left:0; right:0; height:4px; background:linear-gradient(90deg,#6c63ff,#00d4ff); }
-</style></head><body>
-  <div class="bar-top"></div>
-  <div class="bar-bottom"></div>
-  <div class="topbar"></div>
-  <div class="header"><div class="logo"><span class="aima">AIMA</span><span class="boost">BOOSTING</span></div><div class="counter">${esc(counter)}</div></div>
-  <div class="bottombar"></div>
-</body></html>`;
-  }
-
-  // For top/bottom/full layouts
-  const overlayStyle = isBottom
-    ? `position:absolute; bottom:0; left:0; width:100%; height:${overlayH}px; background:linear-gradient(0deg, #07080f 0%, #07080f 78%, rgba(7,8,15,0.85) 92%, rgba(7,8,15,0) 100%);`
-    : `position:absolute; top:0; left:0; width:100%; height:${isFull ? '100%' : overlayH + 'px'}; background:linear-gradient(180deg, #07080f 0%, #07080f 78%, rgba(7,8,15,0.85) 92%, rgba(7,8,15,0) 100%);`;
-
-  const accentBar = isBottom
-    ? `position:absolute; bottom:0; left:0; right:0; height:4px; background:linear-gradient(90deg,#6c63ff,#00d4ff);`
-    : `position:absolute; top:0; left:0; right:0; height:4px; background:linear-gradient(90deg,#6c63ff,#00d4ff,#6c63ff);`;
-
-  const headerStyle = isBottom
-    ? `position:absolute; bottom:18px; left:36px; right:36px; display:flex; align-items:center; justify-content:space-between;`
-    : `position:absolute; top:18px; left:36px; right:36px; display:flex; align-items:center; justify-content:space-between;`;
-
-  const contentStyle = isBottom
-    ? `position:absolute; bottom:64px; left:40px; right:40px; top:${Math.round(height * 0.46)}px; display:flex; flex-direction:column; justify-content:flex-start; gap:14px;`
-    : `position:absolute; top:68px; left:40px; right:40px; bottom:${isFull ? 44 : Math.round(height * 0.46)}px; display:flex; flex-direction:column; justify-content:flex-end; gap:14px;`;
-
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-  * { margin:0; padding:0; box-sizing:border-box; }
-  html, body { width:${width}px; height:${height}px; background:transparent; overflow:hidden; font-family:system-ui,-apple-system,Arial,sans-serif; color:#fff; }
-  .overlay { ${overlayStyle} }
-  .grid { position:absolute; inset:0; background-image:linear-gradient(rgba(108,99,255,0.05) 1px,transparent 1px),linear-gradient(90deg,rgba(108,99,255,0.05) 1px,transparent 1px); background-size:54px 54px; }
-  .bar { ${accentBar} }
-  .header { ${headerStyle} }
-  .logo { font-size:22px; font-weight:900; letter-spacing:-0.04em; }
-  .logo .aima { color:#fff; } .logo .boost { color:#6c63ff; }
-  .counter { font-size:13px; font-weight:700; color:rgba(255,255,255,0.35); letter-spacing:0.08em; }
-  .content { ${contentStyle} }
-  .accent { width:44px; height:4px; background:linear-gradient(90deg,#6c63ff,#00d4ff); border-radius:2px; }
-  .hl { font-size:${hlSize}px; font-weight:900; line-height:1.12; letter-spacing:-0.02em; }
-  .sub { font-size:18px; font-weight:600; color:#6c63ff; line-height:1.4; }
-  .body-text { font-size:17px; color:rgba(255,255,255,0.78); line-height:1.65; }
-  .bullets { list-style:none; display:flex; flex-direction:column; gap:10px; }
-  .bullets li { display:flex; align-items:flex-start; gap:12px; font-size:17px; color:rgba(255,255,255,0.85); line-height:1.45; }
-  .bullets li::before { content:''; display:block; min-width:8px; height:8px; border-radius:50%; background:#6c63ff; margin-top:6px; flex-shrink:0; }
-</style></head><body>
-  <div class="overlay">
-    <div class="grid"></div>
-    <div class="bar"></div>
-    <div class="header">
-      <div class="logo"><span class="aima">AIMA</span><span class="boost">BOOSTING</span></div>
-      <div class="counter">${esc(counter)}</div>
-    </div>
-    <div class="content">
-      <div class="accent"></div>
-      ${headline ? `<h2 class="hl">${esc(headline)}</h2>` : ''}
-      ${subheadline ? `<p class="sub">${esc(subheadline)}</p>` : ''}
-      ${hasBullets ? `<ul class="bullets">${bullets.map(b => `<li>${esc(b)}</li>`).join('')}</ul>` : ''}
-      ${body && !hasBullets ? `<p class="body-text">${esc(body)}</p>` : ''}
-    </div>
-  </div>
-</body></html>`;
-}
-
-// Focused single-task function: detect where actual footage starts in a video frame.
-// Returns a decimal 0.0-1.0 (e.g. 0.55 = footage starts at 55% from the top).
-// Used ONLY for video cropping — not for text extraction.
-async function detectVisualRegion(base64Frame, openaiKey) {
-  try {
-    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openaiKey}` },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        max_tokens: 60,
-        messages: [{
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: `This is a frame from an Instagram video. The video may have a text/logo/branding region at the top and actual video footage (a real photo or video scene) at the bottom.
-
-Your task: find the Y position (as a fraction 0.0-1.0 from the top) where the REAL FOOTAGE begins and the text/branding overlay ends.
-
-Return ONLY valid JSON, no markdown:
-{ "visual_start_pct": 0.0 }
-
-Examples:
-- Footage fills the whole frame → 0.0
-- Text/logo in top 50%, footage in bottom 50% → 0.5
-- Text/logo in top 60%, footage in bottom 40% → 0.6
-- Large text animation with tiny footage strip at bottom → 0.85
-
-Be precise. Look for where colors/textures transition from text/branding to real-world imagery.`,
-            },
-            {
-              type: 'image_url',
-              image_url: { url: `data:image/jpeg;base64,${base64Frame}`, detail: 'high' },
-            },
-          ],
-        }],
-      }),
-    });
-    const data = await resp.json();
-    const raw = data.choices?.[0]?.message?.content || '{"visual_start_pct":0.0}';
-    const clean = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    const parsed = JSON.parse(clean);
-    const val = typeof parsed.visual_start_pct === 'number' ? parsed.visual_start_pct : 0.0;
-    return Math.min(Math.max(val, 0.0), 0.95); // clamp 0-0.95
-  } catch (e) {
-    console.error('detectVisualRegion error:', e.message);
-    return 0.0;
-  }
-}
 
 async function extractSlideContent(base64Image, openaiKey) {
   const resp = await fetch('https://api.openai.com/v1/chat/completions', {
