@@ -614,35 +614,43 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
       });
     });
 
-    // ── Step 4: Extract frame at 30% into video (skips intro animations, shows stable layout)
-    const frameTs = Math.max(2, dims.duration * 0.3).toFixed(2);
-    await new Promise((resolve) => {
-      ffmpeg(videoPath)
-        .inputOptions(['-ss', frameTs])
-        .outputOptions(['-frames:v', '1', '-q:v', '3'])
-        .output(framePath)
-        .on('end', resolve)
-        .on('error', (e) => { console.error('Frame extract error:', e.message); resolve(); })
-        .run();
-    });
+    // ── Step 4: GPT decides the layout — thumbnail analysis drives everything
+    // slide_type = 'cover' → video is a title card → build cover IMAGE (thumbnail as background)
+    // slide_type = 'content' with visual_top_pct > 0.05 → crop competitor's text region from video
+    // slide_type = 'content' with visual_top_pct ≈ 0 → video is pure footage, use as-is
+    const slideType = extracted.slide_type || 'content';
+    const vtp = (typeof extracted.visual_top_pct === 'number' && extracted.visual_top_pct > 0.05)
+      ? Math.min(extracted.visual_top_pct, 0.85) // cap at 85% to avoid destroying the footage
+      : 0.0;
 
-    // ── Step 5: detectVisualRegion — focused GPT call: where does footage start?
-    // This is separate from text extraction — single purpose, single JSON field.
-    let vtp = 0.0; // visual_top_pct: fraction from top where footage begins
-    let base64Frame = null;
-    try { base64Frame = fs.readFileSync(framePath).toString('base64'); } catch (_) {}
-    if (base64Frame) {
-      vtp = await detectVisualRegion(base64Frame, openaiKey);
-      console.log(`[video] vtp=${vtp} → cropping top ${Math.round(vtp * 100)}% (text/logo region)`);
+    console.log(`[video] slide_type=${slideType} vtp=${vtp} duration=${dims.duration}s`);
+
+    // COVER: thumbnail as background image, our big bold text at bottom → new IMAGE slide
+    if (slideType === 'cover' || extracted.layout === 'text_bottom') {
+      const coverPage = await sharedBrowser.newPage();
+      await coverPage.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
+      const coverHtml = buildSlideFromContent({
+        ...extracted,
+        slide_type: 'cover',
+        has_image: !!(slide.slide_image_url),
+        imageUrl: slide.slide_image_url || null,
+        slide_number: slide.slide_number,
+        total_slides: slide.total_slides,
+      });
+      await coverPage.setContent(coverHtml, { waitUntil: 'networkidle2', timeout: 15000 });
+      const coverBuf = await coverPage.screenshot({ type: 'jpeg', quality: 90, fullPage: false });
+      await coverPage.close();
+      const imageUrl = await uploadToImgbb(coverBuf, process.env.IMGBB_API_KEY);
+      cleanup();
+      return { image_url: imageUrl, is_video: false, already_cloudinary: false, slide_number: slide.slide_number, original_caption: slide.original_caption || '', post_id: slide.post_id || '', source_account: slide.source_account || '' };
     }
 
-    // ── Step 6: Calculate crop — cut out the competitor's text/logo region
+    // CONTENT VIDEO: render text block + video (cropped if competitor has text at top)
     const vidW = dims.width;
     const vidH = dims.height;
-    const cropY = Math.round(vidH * vtp);   // pixels to remove from top
-    const cropH = vidH - cropY;             // remaining footage height
+    const cropY = Math.round(vidH * vtp);
+    const cropH = vidH - cropY;
 
-    // ── Step 7: Render AIMABOOSTING text block as opaque PNG (fixed 380px)
     const textH = 380;
     const page = await sharedBrowser.newPage();
     await page.setViewport({ width: 1080, height: textH, deviceScaleFactor: 1 });
@@ -657,11 +665,10 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
     await page.close();
     fs.writeFileSync(textPngPath, textPngBuf);
 
-    // ── Step 8: FFmpeg — crop footage region + stack [text block] on top
-    // Works for any video format: square, vertical (9:16), horizontal — scale=1080:-2 handles aspect ratio
+    // Crop competitor's text region from top (if vtp > 0.05), then vstack with our text block
     const cropFilter = cropY > 20
       ? `[1:v]crop=${vidW}:${cropH}:0:${cropY},scale=1080:-2,setsar=1[vid]`
-      : `[1:v]scale=1080:-2,setsar=1[vid]`; // vtp ≈ 0 → video is already pure footage, no crop needed
+      : '[1:v]scale=1080:-2,setsar=1[vid]'; // vtp ≈ 0 → video is pure footage, no crop needed
 
     await new Promise((resolve, reject) => {
       ffmpeg()
@@ -692,7 +699,7 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
         .run();
     });
 
-    // ── Step 9: Upload to Cloudinary
+    // ── Step 6: Upload to Cloudinary
     const cloudinaryUrl = await uploadVideoToCloudinary(fs.readFileSync(outputPath));
     cleanup();
 
