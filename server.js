@@ -520,14 +520,28 @@ app.post('/render-rebrand-batch', async (req, res) => {
         extracted.slide_type = extracted.slide_type || 'content';
       }
 
-      // 3. Build AIMABOOSTING branded slide — URL passed directly so Puppeteer's browser
-      //    loads it (avoids server-side Instagram CDN blocks). Base64 is only for GPT Vision.
+      // ── Force cover for slide 1; elevate caption to headline for covers ────
+      if (slide.slide_number === 1) extracted.slide_type = 'cover';
+      if (extracted.slide_type === 'cover' && !extracted.headline) {
+        const raw = extracted.body || slide.original_caption || '';
+        // Strip leading emoji/symbols, grab first sentence (max 100 chars)
+        const clean = raw.replace(/^[\p{Emoji}\s\u{1F300}-\u{1FFFF}]*/u, '').trim();
+        const firstSentence = clean.split(/[.!?\n]/)[0].trim();
+        extracted.headline = firstSentence.slice(0, 100) || null;
+        extracted.body = null;
+      }
+
+      // ── Pexels fallback: if image fetch failed, search related photo ───────
+      if (!base64Image && process.env.PEXELS_API_KEY) {
+        const query = (extracted.headline || slide.original_caption || 'technology')
+          .replace(/[^\w\s]/g, ' ').split(/\s+/).slice(0, 4).join(' ');
+        console.log(`[cover] No original image — fetching Pexels: "${query}"`);
+        base64Image = await fetchPexelsImage(query, process.env.PEXELS_API_KEY);
+      }
+
+      // 3. Build AIMABOOSTING branded slide
       const page = await browser.newPage();
       await page.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
-      await page.setExtraHTTPHeaders({
-        'Referer': 'https://www.instagram.com/',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      });
       // Use base64 data URI so Puppeteer browser doesn't need to fetch Instagram CDN
       const bgDataUri = base64Image ? `data:image/jpeg;base64,${base64Image}` : null;
       await page.setContent(buildSlideFromContent({
@@ -535,7 +549,7 @@ app.post('/render-rebrand-batch', async (req, res) => {
         slide_number: slide.slide_number || 1,
         total_slides: slide.total_slides || 1,
         imageUrl: bgDataUri,
-        has_image: extracted.has_image || false,
+        has_image: !!base64Image,
       }), { waitUntil: 'networkidle2', timeout: 15000 });
       const buffer = await page.screenshot({ type: 'jpeg', quality: 85, fullPage: false });
       await page.close();
@@ -741,30 +755,50 @@ async function uploadVideoToCloudinary(videoBuffer) {
   return data.secure_url;
 }
 
+async function fetchPexelsImage(query, apiKey) {
+  try {
+    const resp = await fetch(
+      `https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=3&orientation=square`,
+      { headers: { Authorization: apiKey } }
+    );
+    const data = await resp.json();
+    const photo = data.photos?.[0];
+    if (!photo) return null;
+    const imgUrl = photo.src.large2x || photo.src.large || photo.src.original;
+    const imgResp = await fetch(imgUrl);
+    if (!imgResp.ok) return null;
+    return Buffer.from(await imgResp.arrayBuffer()).toString('base64');
+  } catch (e) {
+    console.error('Pexels fetch error:', e.message);
+    return null;
+  }
+}
+
 function buildTextBlockHtml({ headline, subheadline, body, bullets, slide_number = 1, total_slides = 1, width = 1080, height = 380 }) {
   const esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const counter = `${slide_number}/${total_slides}`;
   const hlText = headline || '';
-  const hlSize = hlText.length > 80 ? 26 : hlText.length > 60 ? 30 : hlText.length > 40 ? 36 : hlText.length > 20 ? 42 : 48;
+  const hlSize = hlText.length > 80 ? 34 : hlText.length > 60 ? 40 : hlText.length > 40 ? 46 : hlText.length > 20 ? 52 : 58;
   const hasBullets = Array.isArray(bullets) && bullets.length > 0;
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+  @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&display=swap');
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { width:${width}px; height:${height}px; background:#07080f; overflow:hidden; font-family:system-ui,-apple-system,Arial,sans-serif; color:#fff; }
   .grid { position:absolute; inset:0; background-image:linear-gradient(rgba(108,99,255,0.06) 1px,transparent 1px),linear-gradient(90deg,rgba(108,99,255,0.06) 1px,transparent 1px); background-size:54px 54px; }
   .topbar { position:absolute; top:0; left:0; right:0; height:4px; background:linear-gradient(90deg,#6c63ff,#00d4ff,#6c63ff); }
   .bottombar { position:absolute; bottom:0; left:0; right:0; height:3px; background:linear-gradient(90deg,#6c63ff,#00d4ff); }
   .header { position:absolute; top:18px; left:36px; right:36px; display:flex; align-items:center; justify-content:space-between; }
-  .logo { font-size:22px; font-weight:900; letter-spacing:-0.04em; }
+  .logo { font-size:24px; font-weight:900; letter-spacing:-0.04em; }
   .logo .aima { color:#fff; } .logo .boost { color:#6c63ff; }
-  .counter { font-size:13px; font-weight:700; color:rgba(255,255,255,0.35); letter-spacing:0.08em; }
-  .content { position:absolute; top:62px; left:36px; right:36px; bottom:16px; display:flex; flex-direction:column; justify-content:center; gap:12px; }
+  .counter { font-size:14px; font-weight:700; color:rgba(255,255,255,0.35); letter-spacing:0.08em; }
+  .content { position:absolute; top:64px; left:36px; right:36px; bottom:16px; display:flex; flex-direction:column; justify-content:center; gap:14px; }
   .accent { width:44px; height:4px; background:linear-gradient(90deg,#6c63ff,#00d4ff); border-radius:2px; }
-  .hl { font-size:${hlSize}px; font-weight:900; line-height:1.12; letter-spacing:-0.02em; color:#fff; }
-  .sub { font-size:17px; font-weight:600; color:#6c63ff; line-height:1.4; }
-  .body-text { font-size:16px; color:rgba(255,255,255,0.78); line-height:1.6; }
-  .bullets { list-style:none; display:flex; flex-direction:column; gap:8px; }
-  .bullets li { display:flex; align-items:flex-start; gap:10px; font-size:16px; color:rgba(255,255,255,0.85); line-height:1.4; }
-  .bullets li::before { content:''; display:block; min-width:8px; height:8px; border-radius:50%; background:#6c63ff; margin-top:5px; flex-shrink:0; }
+  .hl { font-family:'Bebas Neue','Oswald',Impact,Arial,sans-serif; font-size:${hlSize}px; font-weight:400; line-height:1.05; letter-spacing:0.5px; text-transform:uppercase; color:#fff; }
+  .sub { font-size:20px; font-weight:600; color:#6c63ff; line-height:1.4; }
+  .body-text { font-size:20px; font-weight:500; color:rgba(255,255,255,0.90); line-height:1.6; }
+  .bullets { list-style:none; display:flex; flex-direction:column; gap:10px; }
+  .bullets li { display:flex; align-items:flex-start; gap:12px; font-size:20px; font-weight:500; color:#fff; line-height:1.4; }
+  .bullets li::before { content:''; display:block; min-width:9px; height:9px; border-radius:50%; background:#6c63ff; margin-top:6px; flex-shrink:0; }
 </style></head><body>
   <div class="grid"></div>
   <div class="topbar"></div>
@@ -859,10 +893,10 @@ function buildSlideFromContent(data) {
   const hasBullets = Array.isArray(bullets) && bullets.length > 0;
   const hasStatNumber = stat_number && String(stat_number).trim();
   const hlText = headline || '';
-  // Content slides: moderate size
-  const hlSize = hlText.length > 80 ? 34 : hlText.length > 60 ? 40 : hlText.length > 40 ? 48 : hlText.length > 20 ? 56 : 64;
-  // Cover slides: big impact font
-  const coverHlSize = hlText.length > 100 ? 64 : hlText.length > 80 ? 74 : hlText.length > 60 ? 84 : hlText.length > 40 ? 94 : hlText.length > 20 ? 106 : 116;
+  // Content slides: bold IG/TikTok style
+  const hlSize = hlText.length > 80 ? 44 : hlText.length > 60 ? 52 : hlText.length > 40 ? 60 : hlText.length > 20 ? 68 : 76;
+  // Cover slides: massive impact (Bebas Neue)
+  const coverHlSize = hlText.length > 100 ? 78 : hlText.length > 80 ? 90 : hlText.length > 60 ? 102 : hlText.length > 40 ? 112 : hlText.length > 20 ? 122 : 130;
 
   const imgBgStyle = imageUrl ? `background-image:url('${imageUrl}');` : '';
   const showSplit = (has_image || false) && !!imageUrl;
@@ -935,12 +969,12 @@ function buildSlideFromContent(data) {
   .logo .boost { color:#6c63ff; }
   .counter { font-size:14px; font-weight:700; color:rgba(255,255,255,0.35); letter-spacing:0.08em; }
   .accent { width:50px; height:4px; background:linear-gradient(90deg,#6c63ff,#00d4ff); border-radius:2px; flex-shrink:0; }
-  .hl { font-weight:900; color:#fff; line-height:1.1; letter-spacing:-0.03em; }
-  .sub { font-size:21px; font-weight:600; color:#6c63ff; line-height:1.4; }
-  .body-text { font-size:21px; color:rgba(255,255,255,0.75); line-height:1.70; }
-  .bullets { list-style:none; display:flex; flex-direction:column; gap:14px; }
-  .bullets li { display:flex; align-items:flex-start; gap:14px; font-size:21px; color:rgba(255,255,255,0.85); line-height:1.45; }
-  .bullets li::before { content:''; display:block; min-width:10px; height:10px; border-radius:50%; background:#6c63ff; box-shadow:0 0 8px rgba(108,99,255,0.7); margin-top:7px; flex-shrink:0; }
+  .hl { font-family:'Bebas Neue','Oswald',Impact,Arial,sans-serif; font-weight:400; color:#fff; line-height:1.0; letter-spacing:0.5px; text-transform:uppercase; }
+  .sub { font-size:24px; font-weight:600; color:#6c63ff; line-height:1.4; }
+  .body-text { font-size:24px; font-weight:500; color:#fff; line-height:1.65; }
+  .bullets { list-style:none; display:flex; flex-direction:column; gap:16px; }
+  .bullets li { display:flex; align-items:flex-start; gap:16px; font-size:24px; font-weight:500; color:#fff; line-height:1.45; }
+  .bullets li::before { content:''; display:block; min-width:10px; height:10px; border-radius:50%; background:#6c63ff; box-shadow:0 0 8px rgba(108,99,255,0.7); margin-top:8px; flex-shrink:0; }
   .stat-num { font-size:148px; font-weight:900; line-height:1; background:linear-gradient(135deg,#6c63ff,#00d4ff); -webkit-background-clip:text; -webkit-text-fill-color:transparent; letter-spacing:-0.05em; }
   .stat-lbl { font-size:32px; font-weight:700; color:#fff; line-height:1.3; }
   .stat-body { font-size:20px; color:rgba(255,255,255,0.45); line-height:1.6; }`;
@@ -949,61 +983,72 @@ function buildSlideFromContent(data) {
   const decorNoGlow = `<div class="grid"></div><div class="topbar"></div><div class="bottombar"></div>${header}`;
   const decorFull = `<div class="grid"></div><div class="glow glow-1"></div><div class="glow glow-2"></div><div class="topbar"></div><div class="bottombar"></div>${header}`;
 
-  // ── COVER with image: image fills slide, bold text bar at bottom ─────────
-  // Mimics airesearches cover: big sharp image + huge impactful text at bottom
+  // ── COVER with image: full-bleed photo + massive text at bottom (TikTok/IG style) ──
   if (slide_type === 'cover' && imageUrl) {
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
   ${baseCSS}
+  /* Stronger gradient: image shows in top 60%, solid dark below for text readability */
+  .cover-gradient {
+    position:absolute; inset:0;
+    background:linear-gradient(180deg,
+      rgba(7,8,15,0.20) 0%,
+      rgba(7,8,15,0.00) 15%,
+      rgba(7,8,15,0.00) 40%,
+      rgba(7,8,15,0.70) 60%,
+      rgba(7,8,15,0.97) 76%,
+      rgba(7,8,15,1.00) 100%
+    );
+  }
   .cover-text {
-    position:absolute; bottom:0; left:0; right:0; padding:28px 48px 48px;
-    display:flex; flex-direction:column; gap:10px; z-index:5;
+    position:absolute; bottom:0; left:0; right:0; padding:0 48px 52px;
+    display:flex; flex-direction:column; gap:12px; z-index:5;
   }
-  .cover-handle {
-    font-size:15px; font-weight:700; color:rgba(255,255,255,0.55);
-    letter-spacing:0.18em; text-transform:uppercase;
-  }
+  .cover-sep { width:56px; height:4px; background:linear-gradient(90deg,#6c63ff,#00d4ff); border-radius:2px; }
   .cover-hl {
     font-family:'Bebas Neue','Oswald',Impact,Arial,sans-serif;
     font-size:${coverHlSize}px; font-weight:400; line-height:0.95;
-    text-transform:uppercase; letter-spacing:1px;
-    text-shadow:0 3px 20px rgba(0,0,0,0.9), 0 1px 4px rgba(0,0,0,1);
-    color:#fff;
+    text-transform:uppercase; letter-spacing:1.5px;
+    text-shadow:0 4px 24px rgba(0,0,0,1), 0 2px 6px rgba(0,0,0,1);
+    color:#fff; word-break:break-word;
   }
-  .cover-sub { font-size:22px; font-weight:600; color:rgba(255,255,255,0.75); line-height:1.45; }
-  .swipe-row { display:flex; align-items:center; gap:12px; padding-top:6px; }
-  .swipe-line { flex:1; height:2px; background:linear-gradient(90deg,#6c63ff,#00d4ff); border-radius:1px; }
-  .swipe-txt { font-size:13px; font-weight:700; color:#6c63ff; letter-spacing:0.15em; text-transform:uppercase; white-space:nowrap; }
+  .cover-sub { font-size:24px; font-weight:600; color:rgba(255,255,255,0.80); line-height:1.45; }
 </style></head><body>
   <div class="photo-cover"></div>
   <div class="cover-gradient"></div>
   ${decorNoGlow}
   <div class="cover-text">
-    <div class="cover-handle">@aimaboosting</div>
+    <div class="cover-sep"></div>
     ${headline ? `<h1 class="cover-hl">${esc(headline)}</h1>` : ''}
     ${subheadline ? `<p class="cover-sub">${esc(subheadline)}</p>` : ''}
-    <div class="swipe-row"><div class="swipe-line"></div><div class="swipe-txt">Desliza →</div></div>
   </div>
 </body></html>`;
   }
 
-  // ── COVER without image: dark bg, text centered ───────────────────────────
+  // ── COVER without image: dark bg, massive centered text ───────────────────
   if (slide_type === 'cover') {
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
   ${baseCSS}
-  .cover-area { position:absolute; top:90px; left:56px; right:56px; bottom:44px; display:flex; flex-direction:column; justify-content:center; gap:24px; }
-  .cover-pill { display:inline-flex; align-self:flex-start; background:rgba(108,99,255,0.18); border:1px solid rgba(108,99,255,0.5); border-radius:50px; padding:9px 22px; font-size:13px; font-weight:700; color:#6c63ff; letter-spacing:0.12em; text-transform:uppercase; }
-  .cover-hl { font-family:'Bebas Neue','Oswald',Impact,Arial,sans-serif; font-size:${coverHlSize}px; font-weight:400; text-transform:uppercase; letter-spacing:1px; line-height:0.95; }
-  .swipe { font-size:13px; font-weight:700; color:rgba(108,99,255,0.55); letter-spacing:0.14em; text-transform:uppercase; }
+  .cover-area {
+    position:absolute; top:90px; left:56px; right:56px; bottom:44px;
+    display:flex; flex-direction:column; justify-content:center; gap:28px;
+  }
+  .brand-tag { font-size:14px; font-weight:700; color:#6c63ff; letter-spacing:0.18em; text-transform:uppercase; }
+  .cover-hl {
+    font-family:'Bebas Neue','Oswald',Impact,Arial,sans-serif;
+    font-size:${coverHlSize}px; font-weight:400;
+    text-transform:uppercase; letter-spacing:1.5px; line-height:0.95;
+    color:#fff; word-break:break-word;
+  }
+  .cover-body { font-size:22px; font-weight:500; color:rgba(255,255,255,0.85); line-height:1.6; }
 </style></head><body>
   <div class="dark-bg"></div><div class="dark-overlay"></div>
   ${decorFull}
   <div class="cover-area">
-    <div class="cover-pill">@aimaboosting</div>
+    <div class="brand-tag">@AIMABOOSTING</div>
     <div class="accent"></div>
-    ${headline ? `<h1 class="cover-hl" style="color:#fff">${esc(headline)}</h1>` : ''}
+    ${headline ? `<h1 class="cover-hl">${esc(headline)}</h1>` : ''}
     ${subheadline ? `<p class="sub">${esc(subheadline)}</p>` : ''}
-    ${body ? `<p class="body-text">${esc(body)}</p>` : ''}
-    <div class="swipe">Desliza →</div>
+    ${body ? `<p class="cover-body">${esc(body)}</p>` : ''}
   </div>
 </body></html>`;
   }
@@ -1017,9 +1062,9 @@ function buildSlideFromContent(data) {
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
   ${baseCSS}
   .content-area {
-    position:absolute; top:78px; left:52px; right:52px; height:430px;
-    display:flex; flex-direction:column; justify-content:flex-end; gap:16px;
-    padding-bottom:24px;
+    position:absolute; top:78px; left:52px; right:52px; height:480px;
+    display:flex; flex-direction:column; justify-content:flex-end; gap:18px;
+    padding-bottom:28px;
   }
   .content-hl { font-size:${hlSize}px; }
 </style></head><body>
