@@ -9,7 +9,7 @@ const os = require('os');
 const app = express();
 app.use(express.json({ limit: '20mb' }));
 
-app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '2026-03-22-v3', endpoints: ['render-rebrand-batch'] }));
 
 app.post('/render', async (req, res) => {
   const { background_url, inset_url, headline } = req.body;
