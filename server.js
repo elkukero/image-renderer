@@ -591,10 +591,19 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
       extracted.layout = extracted.layout || 'text_top';
     }
 
-    // 3. Download actual video
+    // 3. Download actual video — stream directly to disk to avoid loading into heap
     const vr = await fetch(slide.slide_video_url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.instagram.com/' } });
     if (!vr.ok) throw new Error(`Video download failed: ${vr.status}`);
-    fs.writeFileSync(videoPath, Buffer.from(await vr.arrayBuffer()));
+    await new Promise((resolve, reject) => {
+      const writer = fs.createWriteStream(videoPath);
+      const reader = vr.body.getReader();
+      const pump = () => reader.read().then(({ done, value }) => {
+        if (done) { writer.end(); return; }
+        writer.write(Buffer.from(value), pump);
+      }).catch(reject);
+      writer.on('finish', resolve).on('error', reject);
+      pump();
+    });
 
     // 4. Get video dimensions + duration via ffprobe
     const dims = await new Promise((resolve) => {
@@ -674,10 +683,13 @@ async function processVideoSlide(slide, openaiKey, sharedBrowser) {
           '-map 1:a?',
           '-t', String(dims.duration),
           '-c:v libx264',
-          '-preset fast',
-          '-crf 23',
+          '-preset ultrafast',
+          '-crf 28',
           '-pix_fmt yuv420p',
           '-movflags +faststart',
+          '-threads 1',
+          '-bufsize 512k',
+          '-maxrate 2M',
         ])
         .output(outputPath)
         .on('end', resolve)
