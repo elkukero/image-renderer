@@ -457,16 +457,28 @@ app.post('/render-rebrand-batch', async (req, res) => {
           const result = await processVideoSlide(slideForVideo, openaiKey, browser);
           results.push(result);
         } catch (e) {
-          console.error('Video processing error:', e.message);
-          // Fallback: render as branded image
-          results.push({
-            image_url: slide.slide_image_url,
-            is_video: false,
-            slide_number: slide.slide_number,
-            original_caption: slide.original_caption || '',
-            post_id: slide.post_id || '',
-            source_account: slide.source_account || '',
-          });
+          console.error('Video processing error:', e.message, e.stack);
+          // Fallback: render AIMABOOSTING branded text slide
+          try {
+            const caption = slide.original_caption || '';
+            const short = caption.length > 200 ? caption.slice(0, 200).replace(/\s\S*$/, '...') : caption;
+            const pg = await browser.newPage();
+            await pg.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
+            await pg.setContent(buildTextBlockHtml({
+              body: short || null,
+              slide_number: slide.slide_number,
+              total_slides: slide.total_slides,
+              width: 1080,
+              height: 1080,
+            }), { waitUntil: 'networkidle2', timeout: 10000 });
+            const fbuf = await pg.screenshot({ type: 'jpeg', quality: 85 });
+            await pg.close();
+            const fallbackUrl = await uploadToImgbb(fbuf, imgbbKey);
+            results.push({ image_url: fallbackUrl, is_video: false, already_cloudinary: false, slide_number: slide.slide_number, original_caption: slide.original_caption || '', post_id: slide.post_id || '', source_account: slide.source_account || '' });
+          } catch (fe) {
+            console.error('Fallback render error:', fe.message);
+            results.push({ image_url: null, is_video: false, slide_number: slide.slide_number, original_caption: slide.original_caption || '', post_id: slide.post_id || '', source_account: slide.source_account || '' });
+          }
         }
         continue;
       }
