@@ -9,7 +9,7 @@ const os = require('os');
 const app = express();
 app.use(express.json({ limit: '20mb' }));
 
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '2026-03-22-v8', endpoints: ['render-rebrand-batch', 'render-generate-batch'] }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '2026-03-22-v9', endpoints: ['render-rebrand-batch', 'render-generate-batch'] }));
 
 app.post('/render', async (req, res) => {
   const { background_url, inset_url, headline } = req.body;
@@ -939,7 +939,7 @@ function buildSlideFromContent(data) {
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
   ${baseFont}
   * { margin:0; padding:0; box-sizing:border-box; }
-  html, body { width:1080px; height:1080px; overflow:hidden; background:#000; font-family:'Inter',system-ui,Arial,sans-serif; }
+  html, body { width:1080px; height:1350px; overflow:hidden; background:#000; font-family:'Inter',system-ui,Arial,sans-serif; }
   .photo {
     position:absolute; inset:0;
     background-image:url('${imageUrl}');
@@ -950,16 +950,16 @@ function buildSlideFromContent(data) {
     position:absolute; inset:0;
     background:linear-gradient(180deg,
       rgba(0,0,0,0.30) 0%,
-      rgba(0,0,0,0.00) 22%,
-      rgba(0,0,0,0.00) 42%,
-      rgba(0,0,0,0.65) 62%,
+      rgba(0,0,0,0.00) 20%,
+      rgba(0,0,0,0.00) 40%,
+      rgba(0,0,0,0.60) 60%,
       rgba(0,0,0,0.95) 78%,
       rgba(0,0,0,1.00) 100%
     );
   }
   .bottom-block {
     position:absolute; bottom:0; left:0; right:0;
-    padding:12px 44px 50px;
+    padding:12px 44px 90px;
     display:flex; flex-direction:column; gap:14px; z-index:10;
   }
   .sep { width:60px; height:5px; background:linear-gradient(90deg,#00d4ff,#6c63ff); border-radius:3px; }
@@ -994,7 +994,7 @@ function buildSlideFromContent(data) {
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
   ${baseFont}
   * { margin:0; padding:0; box-sizing:border-box; }
-  html, body { width:1080px; height:1080px; overflow:hidden; background:#000; font-family:'Inter',system-ui,Arial,sans-serif; }
+  html, body { width:1080px; height:1350px; overflow:hidden; background:#000; font-family:'Inter',system-ui,Arial,sans-serif; }
   .noise {
     position:absolute; inset:0;
     background:radial-gradient(ellipse 80% 60% at 50% 40%, rgba(0,212,255,0.06) 0%, transparent 70%),
@@ -1002,7 +1002,7 @@ function buildSlideFromContent(data) {
                #000;
   }
   .cover-area {
-    position:absolute; top:90px; left:52px; right:52px; bottom:60px;
+    position:absolute; top:100px; left:52px; right:52px; bottom:80px;
     display:flex; flex-direction:column; justify-content:center; gap:24px;
   }
   .handle { font-size:16px; font-weight:700; color:#00d4ff; letter-spacing:0.16em; text-transform:uppercase; }
@@ -1049,33 +1049,33 @@ function buildSlideFromContent(data) {
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
   ${baseFont}
   * { margin:0; padding:0; box-sizing:border-box; }
-  html, body { width:1080px; height:1080px; overflow:hidden; background:#000; font-family:'Inter',system-ui,Arial,sans-serif; }
+  html, body { width:1080px; height:1350px; overflow:hidden; background:#000; font-family:'Inter',system-ui,Arial,sans-serif; }
   .photo {
     position:absolute; inset:0;
     background-image:url('${imageUrl}');
     background-size:cover; background-position:center center;
     filter:brightness(0.75) saturate(1.1);
   }
-  /* Top-heavy gradient: solid black top 45% fading smoothly to transparent */
+  /* Top-heavy gradient: solid black top ~40% fading smoothly to transparent */
   .grad {
     position:absolute; inset:0;
     background:linear-gradient(180deg,
       rgba(0,0,0,1.00)  0%,
-      rgba(0,0,0,0.98) 30%,
-      rgba(0,0,0,0.82) 50%,
-      rgba(0,0,0,0.35) 72%,
-      rgba(0,0,0,0.10) 88%,
+      rgba(0,0,0,0.98) 25%,
+      rgba(0,0,0,0.80) 42%,
+      rgba(0,0,0,0.30) 62%,
+      rgba(0,0,0,0.08) 80%,
       rgba(0,0,0,0.00) 100%
     );
   }
   /* Bottom vignette so brand pill is readable */
   .grad-bottom {
     position:absolute; inset:0;
-    background:linear-gradient(0deg, rgba(0,0,0,0.55) 0%, transparent 18%);
+    background:linear-gradient(0deg, rgba(0,0,0,0.55) 0%, transparent 15%);
   }
   .text-block {
-    position:absolute; top:72px; left:0; right:0;
-    padding:28px 48px 0;
+    position:absolute; top:80px; left:0; right:0;
+    padding:24px 48px 0;
     display:flex; flex-direction:column; gap:20px;
   }
   .sep { width:52px; height:5px; background:linear-gradient(90deg,#00d4ff,#6c63ff); border-radius:3px; flex-shrink:0; }
@@ -1127,13 +1127,13 @@ function buildSlideFromContent(data) {
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
   ${baseFont}
   * { margin:0; padding:0; box-sizing:border-box; }
-  html, body { width:1080px; height:1080px; overflow:hidden; background:#000; font-family:'Inter',system-ui,Arial,sans-serif; }
+  html, body { width:1080px; height:1350px; overflow:hidden; background:#000; font-family:'Inter',system-ui,Arial,sans-serif; }
   .noise {
     position:absolute; inset:0;
     background:radial-gradient(ellipse 70% 50% at 50% 30%, rgba(0,212,255,0.05) 0%, transparent 70%), #000;
   }
   .text-area {
-    position:absolute; top:90px; left:52px; right:52px; bottom:52px;
+    position:absolute; top:100px; left:52px; right:52px; bottom:80px;
     display:flex; flex-direction:column; justify-content:center; gap:22px;
   }
   .sep { width:52px; height:5px; background:linear-gradient(90deg,#00d4ff,#6c63ff); border-radius:3px; flex-shrink:0; }
@@ -1290,7 +1290,7 @@ app.post('/render-generate-batch', async (req, res) => {
         // Fallback: render pure text slide
         try {
           const pg = await browser.newPage();
-          await pg.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
+          await pg.setViewport({ width: 1080, height: 1350, deviceScaleFactor: 1 });
           await pg.setContent(buildSlideFromContent({
             slide_type: 'text', has_image: false,
             headline: slide.headline || null,
@@ -1327,7 +1327,7 @@ async function fetchPexelsImageUrl(query, photoIndex = 0) {
   if (!key) return null;
   try {
     const resp = await fetch(
-      'https://api.pexels.com/v1/search?query=' + encodeURIComponent(query) + '&per_page=15&orientation=square',
+      'https://api.pexels.com/v1/search?query=' + encodeURIComponent(query) + '&per_page=15&orientation=portrait',
       { headers: { Authorization: key } }
     );
     const data = await resp.json();
@@ -1426,7 +1426,7 @@ async function handleGeneratedSlide(slide, browser) {
 
     if (imageUrl) {
       const pg = await browser.newPage();
-      await pg.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
+      await pg.setViewport({ width: 1080, height: 1350, deviceScaleFactor: 1 });
       await pg.setContent(buildSlideFromContent({
         slide_type, has_image: true, headline, subheadline, body, bullets,
         slide_number, total_slides, imageUrl,
@@ -1440,7 +1440,7 @@ async function handleGeneratedSlide(slide, browser) {
 
   // TEXT slide (or any slide missing media): pure dark layout
   const pg = await browser.newPage();
-  await pg.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
+  await pg.setViewport({ width: 1080, height: 1350, deviceScaleFactor: 1 });
   await pg.setContent(buildSlideFromContent({
     slide_type: slide_type || 'text', has_image: false,
     headline, subheadline, body, bullets,
