@@ -9,7 +9,7 @@ const os = require('os');
 const app = express();
 app.use(express.json({ limit: '20mb' }));
 
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '2026-03-22-v7', endpoints: ['render-rebrand-batch', 'render-generate-batch'] }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '2026-03-22-v8', endpoints: ['render-rebrand-batch', 'render-generate-batch'] }));
 
 app.post('/render', async (req, res) => {
   const { background_url, inset_url, headline } = req.body;
@@ -1034,37 +1034,49 @@ function buildSlideFromContent(data) {
 </body></html>`;
   }
 
-  // ── CONTENT with image: BLACK top text + SHARP photo bottom ────────────────
+  // ── CONTENT with image: full-bleed photo + gradient overlay (magazine style) ──
   if ((slide_type === 'content') && showSplit) {
     const bulletsHtml = hasBullets
-      ? `<ul style="list-style:none;display:flex;flex-direction:column;gap:14px;">${bullets.map(b =>
-          `<li style="display:flex;align-items:flex-start;gap:14px;font-size:${bodySize}px;font-weight:500;color:#fff;line-height:1.45;">
-            <span style="display:block;min-width:9px;height:9px;border-radius:50%;background:#00d4ff;margin-top:10px;flex-shrink:0;"></span>
+      ? `<ul style="list-style:none;display:flex;flex-direction:column;gap:16px;">${bullets.map(b =>
+          `<li style="display:flex;align-items:flex-start;gap:14px;font-size:${bodySize}px;font-weight:500;color:rgba(255,255,255,0.92);line-height:1.5;">
+            <span style="display:block;min-width:9px;height:9px;border-radius:50%;background:#00d4ff;margin-top:10px;flex-shrink:0;box-shadow:0 0 8px rgba(0,212,255,0.6);"></span>
             ${esc(b)}</li>`
         ).join('')}</ul>`
       : '';
     const bodyHtml = body && !hasBullets
-      ? `<p style="font-size:${bodySize}px;font-weight:500;color:#fff;line-height:1.65;">${esc(body)}</p>`
+      ? `<p style="font-size:${bodySize}px;font-weight:500;color:rgba(255,255,255,0.88);line-height:1.65;">${esc(body)}</p>`
       : '';
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
   ${baseFont}
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { width:1080px; height:1080px; overflow:hidden; background:#000; font-family:'Inter',system-ui,Arial,sans-serif; }
-  .photo-bottom {
-    position:absolute; left:0; right:0; bottom:0; height:560px;
+  .photo {
+    position:absolute; inset:0;
     background-image:url('${imageUrl}');
     background-size:cover; background-position:center center;
+    filter:brightness(0.75) saturate(1.1);
   }
-  .photo-fade {
-    position:absolute; left:0; right:0; bottom:0; height:600px;
-    background:linear-gradient(180deg,#000 0%,rgba(0,0,0,0.10) 40%,rgba(0,0,0,0.0) 100%);
+  /* Top-heavy gradient: solid black top 45% fading smoothly to transparent */
+  .grad {
+    position:absolute; inset:0;
+    background:linear-gradient(180deg,
+      rgba(0,0,0,1.00)  0%,
+      rgba(0,0,0,0.98) 30%,
+      rgba(0,0,0,0.82) 50%,
+      rgba(0,0,0,0.35) 72%,
+      rgba(0,0,0,0.10) 88%,
+      rgba(0,0,0,0.00) 100%
+    );
+  }
+  /* Bottom vignette so brand pill is readable */
+  .grad-bottom {
+    position:absolute; inset:0;
+    background:linear-gradient(0deg, rgba(0,0,0,0.55) 0%, transparent 18%);
   }
   .text-block {
-    position:absolute; top:0; left:0; right:0; height:490px;
-    background:#000;
-    display:flex; flex-direction:column; justify-content:center;
-    padding:90px 44px 32px;
-    gap:18px;
+    position:absolute; top:72px; left:0; right:0;
+    padding:28px 48px 0;
+    display:flex; flex-direction:column; gap:20px;
   }
   .sep { width:52px; height:5px; background:linear-gradient(90deg,#00d4ff,#6c63ff); border-radius:3px; flex-shrink:0; }
   .content-hl {
@@ -1074,24 +1086,26 @@ function buildSlideFromContent(data) {
     word-break:break-word;
   }
   .brand-bottom {
-    position:absolute; bottom:18px; left:0; right:0;
+    position:absolute; bottom:22px; left:0; right:0;
     display:flex; justify-content:center; align-items:center; z-index:10;
   }
   .brand-pill {
-    background:rgba(0,0,0,0.70); border:1.5px solid rgba(255,255,255,0.20);
-    border-radius:50px; padding:6px 20px;
-    font-size:17px; font-weight:900; letter-spacing:-0.02em; color:#fff;
+    background:rgba(0,0,0,0.80); border:1.5px solid rgba(255,255,255,0.18);
+    border-radius:50px; padding:8px 24px;
+    font-size:18px; font-weight:900; letter-spacing:-0.02em; color:#fff;
+    backdrop-filter:blur(6px);
   }
   .brand-pill span { color:#00d4ff; }
 </style></head><body>
-  <div class="photo-bottom"></div>
-  <div class="photo-fade"></div>
+  <div class="photo"></div>
+  <div class="grad"></div>
+  <div class="grad-bottom"></div>
+  ${logoBar}
   <div class="text-block">
     <div class="sep"></div>
     ${headline ? `<h2 class="content-hl">${esc(headline)}</h2>` : ''}
     ${bulletsHtml}${bodyHtml}
   </div>
-  ${logoBar}
   <div class="brand-bottom">
     <div class="brand-pill">AIMA<span>BOOSTING</span></div>
   </div>
@@ -1307,18 +1321,20 @@ app.post('/render-generate-batch', async (req, res) => {
   }
 });
 
-// Fetch image from Pexels by keyword query
-async function fetchPexelsImageUrl(query) {
+// Fetch image from Pexels — photoIndex ensures each slide gets a different photo
+async function fetchPexelsImageUrl(query, photoIndex = 0) {
   const key = process.env.PEXELS_API_KEY;
   if (!key) return null;
   try {
     const resp = await fetch(
-      'https://api.pexels.com/v1/search?query=' + encodeURIComponent(query) + '&per_page=5&orientation=square',
+      'https://api.pexels.com/v1/search?query=' + encodeURIComponent(query) + '&per_page=15&orientation=square',
       { headers: { Authorization: key } }
     );
     const data = await resp.json();
-    const photo = data.photos && data.photos[0];
-    if (!photo) return null;
+    const photos = data.photos || [];
+    if (!photos.length) return null;
+    // Pick by index (mod to avoid out-of-bounds)
+    const photo = photos[photoIndex % photos.length];
     return photo.src.large2x || photo.src.large || photo.src.original;
   } catch (e) {
     console.error('[pexels] search failed:', e.message);
@@ -1397,10 +1413,10 @@ async function handleGeneratedSlide(slide, browser) {
     if (image_url_raw) {
       imageUrl = await downloadImageAsDataUrl(image_url_raw);
     }
-    // 2. Fetch from Pexels directly on Railway
+    // 2. Fetch from Pexels directly on Railway (use slide_number as index to avoid duplicates)
     if (!imageUrl) {
-      const pexelsUrl = await fetchPexelsImageUrl(pexelsQuery);
-      console.log(`[generate] slide ${slide_number} pexels fallback: ${pexelsUrl}`);
+      const pexelsUrl = await fetchPexelsImageUrl(pexelsQuery, slide_number - 1);
+      console.log(`[generate] slide ${slide_number} pexels: ${pexelsUrl}`);
       if (pexelsUrl) imageUrl = await downloadImageAsDataUrl(pexelsUrl);
     }
     // 3. base64 fallback
