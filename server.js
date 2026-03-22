@@ -9,7 +9,7 @@ const os = require('os');
 const app = express();
 app.use(express.json({ limit: '20mb' }));
 
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '2026-03-22-v4', endpoints: ['render-rebrand-batch', 'render-generate-batch'] }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '2026-03-22-v5', endpoints: ['render-rebrand-batch', 'render-generate-batch'] }));
 
 app.post('/render', async (req, res) => {
   const { background_url, inset_url, headline } = req.body;
@@ -1314,26 +1314,46 @@ async function handleGeneratedSlide(slide, browser) {
     slide_number = 1, total_slides = 1,
   } = slide;
 
-  console.log(`[generate] slide ${slide_number} type=${slide_type} image=${!!image_base64} video=${!!video_url}`);
+  const image_url_raw = slide.image_url || null;
+  console.log(`[generate] slide ${slide_number} type=${slide_type} image_url=${!!image_url_raw} image_b64=${!!image_base64} video=${!!video_url}`);
 
   // VIDEO slide: AIMABOOSTING text block (380px) + Pexels video (970px) stacked
   if (slide_type === 'video' && video_url) {
     return await renderPexelsVideoSlide({ slide, browser });
   }
 
-  // COVER or CONTENT with image
-  if ((slide_type === 'cover' || slide_type === 'content') && image_base64) {
-    const imageUrl = `data:image/jpeg;base64,${image_base64}`;
-    const pg = await browser.newPage();
-    await pg.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
-    await pg.setContent(buildSlideFromContent({
-      slide_type, has_image: true, headline, subheadline, body, bullets,
-      slide_number, total_slides, imageUrl,
-    }), { waitUntil: 'networkidle2', timeout: 15000 });
-    const buf = await pg.screenshot({ type: 'jpeg', quality: 87, fullPage: false });
-    await pg.close();
-    const url = await uploadToImgbb(buf, process.env.IMGBB_API_KEY);
-    return { image_url: url, is_video: false, slide_number };
+  // COVER or CONTENT with image (prefer URL, fallback to base64)
+  const hasImage = image_url_raw || image_base64;
+  if ((slide_type === 'cover' || slide_type === 'content') && hasImage) {
+    let imageUrl;
+    if (image_url_raw) {
+      // Download from Pexels on Railway server (reliable, no size limits)
+      try {
+        const imgResp = await fetch(image_url_raw, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+        if (imgResp.ok) {
+          const buf64 = Buffer.from(await imgResp.arrayBuffer()).toString('base64');
+          imageUrl = `data:image/jpeg;base64,${buf64}`;
+        }
+      } catch (e) {
+        console.error(`[generate] image fetch failed: ${e.message}`);
+      }
+    }
+    if (!imageUrl && image_base64) {
+      imageUrl = `data:image/jpeg;base64,${image_base64}`;
+    }
+
+    if (imageUrl) {
+      const pg = await browser.newPage();
+      await pg.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
+      await pg.setContent(buildSlideFromContent({
+        slide_type, has_image: true, headline, subheadline, body, bullets,
+        slide_number, total_slides, imageUrl,
+      }), { waitUntil: 'networkidle2', timeout: 15000 });
+      const buf = await pg.screenshot({ type: 'jpeg', quality: 87, fullPage: false });
+      await pg.close();
+      const url = await uploadToImgbb(buf, process.env.IMGBB_API_KEY);
+      return { image_url: url, is_video: false, slide_number };
+    }
   }
 
   // TEXT slide (or any slide missing media): pure dark layout
