@@ -9,7 +9,7 @@ const os = require('os');
 const app = express();
 app.use(express.json({ limit: '20mb' }));
 
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '2026-03-22-v5', endpoints: ['render-rebrand-batch', 'render-generate-batch'] }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '2026-03-22-v6', endpoints: ['render-rebrand-batch', 'render-generate-batch'] }));
 
 app.post('/render', async (req, res) => {
   const { background_url, inset_url, headline } = req.body;
@@ -1307,6 +1307,61 @@ app.post('/render-generate-batch', async (req, res) => {
   }
 });
 
+// Fetch image from Pexels by keyword query
+async function fetchPexelsImageUrl(query) {
+  const key = process.env.PEXELS_API_KEY;
+  if (!key) return null;
+  try {
+    const resp = await fetch(
+      'https://api.pexels.com/v1/search?query=' + encodeURIComponent(query) + '&per_page=5&orientation=square',
+      { headers: { Authorization: key } }
+    );
+    const data = await resp.json();
+    const photo = data.photos && data.photos[0];
+    if (!photo) return null;
+    return photo.src.large2x || photo.src.large || photo.src.original;
+  } catch (e) {
+    console.error('[pexels] search failed:', e.message);
+    return null;
+  }
+}
+
+// Fetch Pexels video URL by keyword query
+async function fetchPexelsVideoUrl(query) {
+  const key = process.env.PEXELS_API_KEY;
+  if (!key) return null;
+  try {
+    const resp = await fetch(
+      'https://api.pexels.com/videos/search?query=' + encodeURIComponent(query) + '&per_page=5&size=medium',
+      { headers: { Authorization: key } }
+    );
+    const data = await resp.json();
+    const video = data.videos && data.videos[0];
+    if (!video) return null;
+    const files = video.video_files || [];
+    const hd = files.find(f => f.quality === 'hd' && f.file_type === 'video/mp4')
+      || files.find(f => f.file_type === 'video/mp4')
+      || files[0];
+    return hd ? hd.link : null;
+  } catch (e) {
+    console.error('[pexels] video search failed:', e.message);
+    return null;
+  }
+}
+
+// Download image URL → base64 data URL for Puppeteer
+async function downloadImageAsDataUrl(url) {
+  try {
+    const resp = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    if (!resp.ok) return null;
+    const buf = Buffer.from(await resp.arrayBuffer()).toString('base64');
+    return `data:image/jpeg;base64,${buf}`;
+  } catch (e) {
+    console.error('[img-download] failed:', e.message);
+    return null;
+  }
+}
+
 async function handleGeneratedSlide(slide, browser) {
   const {
     slide_type, headline, subheadline, body, bullets,
@@ -1314,30 +1369,41 @@ async function handleGeneratedSlide(slide, browser) {
     slide_number = 1, total_slides = 1,
   } = slide;
 
-  const image_url_raw = slide.image_url || null;
-  console.log(`[generate] slide ${slide_number} type=${slide_type} image_url=${!!image_url_raw} image_b64=${!!image_base64} video=${!!video_url}`);
+  // Build Pexels search query from slide headline + topic_keywords
+  const headlineWords = (headline || '').replace(/[^\w\s]/g, ' ').split(/\s+/).slice(0, 5).join(' ');
+  const pexelsQuery = headlineWords || 'technology artificial intelligence';
 
-  // VIDEO slide: AIMABOOSTING text block (380px) + Pexels video (970px) stacked
-  if (slide_type === 'video' && video_url) {
-    return await renderPexelsVideoSlide({ slide, browser });
+  // Prefer pre-supplied URL, then fetch from Pexels directly on Railway
+  let image_url_raw = slide.image_url || null;
+
+  console.log(`[generate] slide ${slide_number} type=${slide_type} pre_url=${!!image_url_raw} b64=${!!image_base64} video=${!!video_url}`);
+
+  // VIDEO slide
+  if (slide_type === 'video') {
+    // Use pre-supplied video URL or fetch from Pexels
+    if (!video_url) {
+      slide = Object.assign({}, slide, { video_url: await fetchPexelsVideoUrl(pexelsQuery) });
+    }
+    if (slide.video_url) {
+      return await renderPexelsVideoSlide({ slide, browser });
+    }
   }
 
-  // COVER or CONTENT with image (prefer URL, fallback to base64)
-  const hasImage = image_url_raw || image_base64;
-  if ((slide_type === 'cover' || slide_type === 'content') && hasImage) {
-    let imageUrl;
+  // COVER or CONTENT: need an image
+  if (slide_type === 'cover' || slide_type === 'content') {
+    let imageUrl = null;
+
+    // 1. Try pre-supplied URL
     if (image_url_raw) {
-      // Download from Pexels on Railway server (reliable, no size limits)
-      try {
-        const imgResp = await fetch(image_url_raw, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-        if (imgResp.ok) {
-          const buf64 = Buffer.from(await imgResp.arrayBuffer()).toString('base64');
-          imageUrl = `data:image/jpeg;base64,${buf64}`;
-        }
-      } catch (e) {
-        console.error(`[generate] image fetch failed: ${e.message}`);
-      }
+      imageUrl = await downloadImageAsDataUrl(image_url_raw);
     }
+    // 2. Fetch from Pexels directly on Railway
+    if (!imageUrl) {
+      const pexelsUrl = await fetchPexelsImageUrl(pexelsQuery);
+      console.log(`[generate] slide ${slide_number} pexels fallback: ${pexelsUrl}`);
+      if (pexelsUrl) imageUrl = await downloadImageAsDataUrl(pexelsUrl);
+    }
+    // 3. base64 fallback
     if (!imageUrl && image_base64) {
       imageUrl = `data:image/jpeg;base64,${image_base64}`;
     }
