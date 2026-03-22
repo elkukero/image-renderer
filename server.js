@@ -9,7 +9,7 @@ const os = require('os');
 const app = express();
 app.use(express.json({ limit: '20mb' }));
 
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '2026-03-22-v6', endpoints: ['render-rebrand-batch', 'render-generate-batch'] }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '2026-03-22-v7', endpoints: ['render-rebrand-batch', 'render-generate-batch'] }));
 
 app.post('/render', async (req, res) => {
   const { background_url, inset_url, headline } = req.body;
@@ -1053,7 +1053,7 @@ function buildSlideFromContent(data) {
   .photo-bottom {
     position:absolute; left:0; right:0; bottom:0; height:560px;
     background-image:url('${imageUrl}');
-    background-size:cover; background-position:center top;
+    background-size:cover; background-position:center center;
   }
   .photo-fade {
     position:absolute; left:0; right:0; bottom:0; height:600px;
@@ -1369,9 +1369,9 @@ async function handleGeneratedSlide(slide, browser) {
     slide_number = 1, total_slides = 1,
   } = slide;
 
-  // Build Pexels search query from slide headline + topic_keywords
-  const headlineWords = (headline || '').replace(/[^\w\s]/g, ' ').split(/\s+/).slice(0, 5).join(' ');
-  const pexelsQuery = headlineWords || 'technology artificial intelligence';
+  // Use GPT-provided English Pexels query, or fall back to headline words
+  const pexelsQuery = slide.pexels_query || (headline || '').replace(/[^\w\s]/g, ' ').split(/\s+/).slice(0, 5).join(' ') || 'technology artificial intelligence';
+  console.log(`[generate] slide ${slide_number} pexels_query="${pexelsQuery}"`);
 
   // Prefer pre-supplied URL, then fetch from Pexels directly on Railway
   let image_url_raw = slide.image_url || null;
