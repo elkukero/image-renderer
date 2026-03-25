@@ -14,8 +14,8 @@ app.get('/health', (_req, res) => res.json({ status: 'ok', version: '2026-03-22-
 app.post('/render', async (req, res) => {
   const { background_url, inset_url, headline } = req.body;
 
-  if (!background_url || !inset_url || !headline) {
-    return res.status(400).json({ error: 'Missing required fields: background_url, inset_url, headline' });
+  if (!background_url || !headline) {
+    return res.status(400).json({ error: 'Missing required fields: background_url, headline' });
   }
 
   const imgbbKey = process.env.IMGBB_API_KEY;
@@ -30,7 +30,7 @@ app.post('/render', async (req, res) => {
     });
     const page = await browser.newPage();
     await page.setViewport({ width: 1080, height: 1350, deviceScaleFactor: 1 });
-    await page.setContent(buildHtml(background_url, inset_url, headline), {
+    await page.setContent(buildHtml(background_url, inset_url || '', headline), {
       waitUntil: 'networkidle0',
       timeout: 20000,
     });
@@ -80,7 +80,7 @@ function buildHtml(bg, inset, headline) {
 <head>
 <meta charset="utf-8">
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@700&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@900&display=swap');
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 1080px; height: 1350px; overflow: hidden; background: #000; }
 
@@ -104,29 +104,12 @@ function buildHtml(bg, inset, headline) {
     left: 50%;
     transform: translateX(-50%);
     color: rgba(255,255,255,0.85);
-    font-family: 'Oswald', 'Arial Black', sans-serif;
-    font-size: 26px;
-    font-weight: 700;
-    letter-spacing: 4px;
+    font-family: 'Montserrat', 'Arial Black', sans-serif;
+    font-size: 22px;
+    font-weight: 900;
+    letter-spacing: 6px;
     text-shadow: 1px 1px 6px rgba(0,0,0,0.95);
     white-space: nowrap;
-  }
-
-  .inset-wrap {
-    position: absolute;
-    top: 60px;
-    right: 40px;
-    width: 300px;
-    height: 300px;
-    border-radius: 50%;
-    overflow: hidden;
-    border: 5px solid rgba(255,255,255,0.92);
-    box-shadow: 0 8px 32px rgba(0,0,0,0.6);
-  }
-
-  .inset {
-    width: 100%; height: 100%;
-    object-fit: cover;
   }
 
   .headline {
@@ -135,12 +118,13 @@ function buildHtml(bg, inset, headline) {
     left: 28px;
     right: 28px;
     color: #fff;
-    font-family: 'Oswald', 'Arial Black', Impact, sans-serif;
-    font-size: 90px;
-    font-weight: 700;
+    font-family: 'Montserrat', Impact, sans-serif;
+    font-size: 80px;
+    font-weight: 900;
     text-align: center;
     text-transform: uppercase;
-    line-height: 1.06;
+    line-height: 1.0;
+    letter-spacing: 1px;
     text-shadow: 3px 3px 8px rgba(0,0,0,0.95), 1px 1px 0 rgba(0,0,0,0.9);
     word-break: break-word;
   }
@@ -152,9 +136,6 @@ function buildHtml(bg, inset, headline) {
   <img class="bg" src="${safe(bg)}" crossorigin="anonymous">
   <div class="overlay"></div>
   <div class="handle">@BACKPAINLIFE</div>
-  <div class="inset-wrap">
-    <img class="inset" src="${safe(inset)}" crossorigin="anonymous">
-  </div>
   <div class="headline">${parseHeadline(headline)}</div>
 </body>
 </html>`;
