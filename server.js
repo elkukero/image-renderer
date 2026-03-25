@@ -237,9 +237,9 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
     background: linear-gradient(
       to bottom,
       transparent 0%,
-      transparent 35%,
-      rgba(0,0,0,0.6) 52%,
-      rgba(0,0,0,0.97) 68%,
+      transparent 50%,
+      rgba(0,0,0,0.6) 65%,
+      rgba(0,0,0,0.97) 80%,
       #000 100%
     );
   }
@@ -310,10 +310,10 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
     background: linear-gradient(
       to bottom,
       transparent 0%,
-      transparent 28%,
-      rgba(0,0,0,0.55) 42%,
-      rgba(0,0,0,0.92) 56%,
-      #000 72%,
+      transparent 45%,
+      rgba(0,0,0,0.55) 60%,
+      rgba(0,0,0,0.92) 74%,
+      #000 88%,
       #000 100%
     );
   }
