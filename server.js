@@ -212,7 +212,7 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
 
   const numStr = String(slideNumber || 1).padStart(2, '0');
 
-  const fonts = `@import url('https://fonts.googleapis.com/css2?family=Oswald:wght@700&family=Bebas+Neue&display=swap');`;
+  const fonts = `@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@900&family=Bebas+Neue&display=swap');`;
 
   if (template === 'cover') {
     return `<!DOCTYPE html>
@@ -253,12 +253,12 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
 
   .headline {
     color: #fff;
-    font-family: 'Bebas Neue', 'Oswald', Impact, sans-serif;
-    font-size: 110px;
-    font-weight: 400;
+    font-family: 'Montserrat', 'Bebas Neue', Impact, sans-serif;
+    font-size: 80px;
+    font-weight: 900;
     text-transform: uppercase;
-    line-height: 0.96;
-    letter-spacing: 2px;
+    line-height: 1.0;
+    letter-spacing: 1px;
     word-break: break-word;
   }
 
@@ -268,9 +268,9 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
     display: inline-block;
     margin-top: 18px;
     color: #4BB8D0;
-    font-family: 'Oswald', sans-serif;
+    font-family: 'Montserrat', sans-serif;
     font-size: 26px;
-    font-weight: 700;
+    font-weight: 900;
     letter-spacing: 4px;
     text-transform: uppercase;
   }
@@ -281,7 +281,7 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
   <div class="overlay"></div>
   <div class="text-block">
     <div class="headline">${parseHeadline(headline)}</div>
-    <div class="swipe">SWIPE →</div>
+    ${String(slideNumber) === '1' ? '<div class="swipe">SWIPE →</div>' : ''}
   </div>
 </body>
 </html>`;
@@ -323,8 +323,9 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
     top: 20px; left: 20px;
     background: rgba(0,0,0,0.72);
     color: #4BB8D0;
-    font-family: 'Bebas Neue', 'Oswald', sans-serif;
-    font-size: 30px;
+    font-family: 'Montserrat', 'Bebas Neue', sans-serif;
+    font-size: 26px;
+    font-weight: 900;
     letter-spacing: 3px;
     padding: 4px 14px 2px;
     border-radius: 3px;
@@ -339,12 +340,12 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
 
   .headline {
     color: #fff;
-    font-family: 'Bebas Neue', 'Oswald', Impact, sans-serif;
+    font-family: 'Montserrat', 'Bebas Neue', Impact, sans-serif;
     font-size: 82px;
-    font-weight: 400;
+    font-weight: 900;
     text-transform: uppercase;
     line-height: 0.94;
-    letter-spacing: 2px;
+    letter-spacing: 1px;
     word-break: break-word;
     margin-bottom: 20px;
   }
@@ -352,9 +353,9 @@ function buildCarouselHtml(imageUrl, headline, template, slideNumber, subtext) {
 
   .subtext {
     color: rgba(255,255,255,0.90);
-    font-family: 'Oswald', Arial, sans-serif;
+    font-family: 'Montserrat', Arial, sans-serif;
     font-size: 26px;
-    font-weight: 400;
+    font-weight: 600;
     line-height: 1.55;
   }
 </style>
