@@ -9,7 +9,7 @@ const os = require('os');
 const app = express();
 app.use(express.json({ limit: '20mb' }));
 
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '2026-03-26-v11', endpoints: ['render-rebrand-batch', 'render-generate-batch'] }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '2026-03-26-v12', endpoints: ['render-rebrand-batch', 'render-generate-batch'] }));
 
 app.post('/render', async (req, res) => {
   const { background_url, inset_url, headline } = req.body;
@@ -1572,21 +1572,22 @@ function buildAimaCarouselSlide({ imageUrl, headline, body, bullets, slide_numbe
 </body></html>`;
   }
 
-  // PHOTO slide — full-bleed cover style
+  // PHOTO slide — full-bleed cover style (centered, logo above headline)
   const hlSize = (headline || '').length > 60 ? 64 : (headline || '').length > 40 ? 76 : 88;
   const bodySize = 30;
+  const showCounter = total_slides > 1;
 
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
   ${fonts}
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { width:1080px; height:1350px; overflow:hidden; background:#000; font-family:'Montserrat',Arial,sans-serif; }
   .bg { position:absolute; width:100%; height:100%; object-fit:cover; opacity:0.92; }
-  .overlay { position:absolute; inset:0; background:linear-gradient(to bottom, rgba(0,0,0,0.25) 0%, transparent 30%, transparent 45%, rgba(0,0,0,0.55) 62%, rgba(0,0,0,0.93) 78%, #000 92%); }
-  .logo { position:absolute; top:28px; left:36px; height:52px; width:auto; filter:drop-shadow(0 2px 6px rgba(0,0,0,0.8)); }
-  .logo-text { position:absolute; top:28px; left:36px; color:#fff; font-size:28px; font-weight:900; letter-spacing:-0.02em; text-shadow:0 2px 6px rgba(0,0,0,0.8); }
-  .logo-text span { color:#00c8ff; }
+  .overlay { position:absolute; inset:0; background:linear-gradient(to bottom, rgba(0,0,0,0.15) 0%, transparent 28%, transparent 44%, rgba(0,0,0,0.5) 60%, rgba(0,0,0,0.93) 76%, #000 90%); }
   .counter { position:absolute; top:28px; right:36px; color:rgba(255,255,255,0.7); font-size:22px; font-weight:700; letter-spacing:0.06em; text-shadow:0 2px 4px rgba(0,0,0,0.9); }
-  .text-block { position:absolute; bottom:0; left:0; right:0; padding:0 52px 56px 52px; }
+  .text-block { position:absolute; bottom:0; left:0; right:0; padding:0 52px 52px 52px; text-align:center; }
+  .logo { height:58px; width:auto; margin-bottom:20px; filter:drop-shadow(0 2px 8px rgba(0,0,0,0.9)); }
+  .logo-text { color:#fff; font-size:30px; font-weight:900; letter-spacing:-0.02em; margin-bottom:20px; text-shadow:0 2px 8px rgba(0,0,0,0.9); }
+  .logo-text span { color:#00c8ff; }
   .hl { color:#fff; font-size:${hlSize}px; font-weight:900; text-transform:uppercase; line-height:1.0; letter-spacing:1px; word-break:break-word; text-shadow:2px 2px 8px rgba(0,0,0,0.9); }
   .hl .kw { color:#00c8ff; }
   .body-text { margin-top:18px; color:rgba(255,255,255,0.88); font-size:${bodySize}px; font-weight:600; line-height:1.55; text-shadow:1px 1px 4px rgba(0,0,0,0.9); }
@@ -1594,15 +1595,43 @@ function buildAimaCarouselSlide({ imageUrl, headline, body, bullets, slide_numbe
 </style></head><body>
   <img class="bg" src="${safe(imageUrl)}" crossorigin="anonymous">
   <div class="overlay"></div>
-  ${logoHtml}
-  <div class="counter">${safe(counter)}</div>
+  ${showCounter ? `<div class="counter">${safe(counter)}</div>` : ''}
   <div class="text-block">
+    ${logoSrc ? `<img class="logo" src="${logoSrc}" alt="AIMABOOSTING">` : `<div class="logo-text">AIMA<span>BOOSTING</span></div>`}
     <div class="hl">${parseHl(headline || '')}</div>
     ${body && !hasBullets ? `<div class="body-text">${safe(body)}</div>` : ''}
-    ${isCover ? '<div class="swipe">DESLIZA →</div>' : ''}
+    ${isCover && total_slides > 1 ? '<div class="swipe">DESLIZA →</div>' : ''}
   </div>
 </body></html>`;
 }
+
+// POST /render-aima — Single image for @aimaboosting (same cover style, no counter/swipe)
+app.post('/render-aima', async (req, res) => {
+  const { background_url, headline } = req.body;
+  if (!background_url || !headline) return res.status(400).json({ error: 'Missing background_url or headline' });
+  if (!process.env.IMGBB_API_KEY) return res.status(500).json({ error: 'IMGBB_API_KEY not set' });
+
+  let browser;
+  try {
+    browser = await puppeteer.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] });
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1080, height: 1350, deviceScaleFactor: 1 });
+    const imageDataUrl = await downloadImageAsDataUrl(background_url);
+    await page.setContent(buildAimaCarouselSlide({
+      imageUrl: imageDataUrl || background_url,
+      headline, body: null, bullets: null,
+      slide_number: 1, total_slides: 1, slide_type: 'cover',
+    }), { waitUntil: 'networkidle2', timeout: 20000 });
+    const buffer = await page.screenshot({ type: 'jpeg', quality: 88, fullPage: false });
+    await browser.close(); browser = null;
+    const imageUrl = await uploadToImgbb(buffer, process.env.IMGBB_API_KEY);
+    res.json({ success: true, image_url: imageUrl });
+  } catch (err) {
+    console.error('[render-aima] error:', err.message);
+    if (browser) await browser.close();
+    res.status(500).json({ error: err.message });
+  }
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Image renderer running on port ${PORT}`));
