@@ -9,7 +9,7 @@ const os = require('os');
 const app = express();
 app.use(express.json({ limit: '20mb' }));
 
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '2026-03-22-v10', endpoints: ['render-rebrand-batch', 'render-generate-batch'] }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '2026-03-26-v11', endpoints: ['render-rebrand-batch', 'render-generate-batch'] }));
 
 app.post('/render', async (req, res) => {
   const { background_url, inset_url, headline } = req.body;
@@ -1269,14 +1269,14 @@ app.post('/render-generate-batch', async (req, res) => {
         try {
           const pg = await browser.newPage();
           await pg.setViewport({ width: 1080, height: 1350, deviceScaleFactor: 1 });
-          await pg.setContent(buildSlideFromContent({
-            slide_type: 'text', has_image: false,
+          await pg.setContent(buildAimaCarouselSlide({
+            imageUrl: null,
             headline: slide.headline || null,
             body: slide.body || null,
             bullets: slide.bullets || null,
             slide_number: slide.slide_number || 1,
             total_slides: slide.total_slides || slides.length,
-            imageUrl: null,
+            slide_type: 'text',
           }), { waitUntil: 'networkidle2', timeout: 15000 });
           const buf = await pg.screenshot({ type: 'jpeg', quality: 85, fullPage: false });
           await pg.close();
@@ -1405,9 +1405,8 @@ async function handleGeneratedSlide(slide, browser) {
     if (imageUrl) {
       const pg = await browser.newPage();
       await pg.setViewport({ width: 1080, height: 1350, deviceScaleFactor: 1 });
-      await pg.setContent(buildSlideFromContent({
-        slide_type, has_image: true, headline, subheadline, body, bullets,
-        slide_number, total_slides, imageUrl,
+      await pg.setContent(buildAimaCarouselSlide({
+        imageUrl, headline, body, bullets, slide_number, total_slides, slide_type,
       }), { waitUntil: 'networkidle2', timeout: 15000 });
       const buf = await pg.screenshot({ type: 'jpeg', quality: 87, fullPage: false });
       await pg.close();
@@ -1416,13 +1415,11 @@ async function handleGeneratedSlide(slide, browser) {
     }
   }
 
-  // TEXT slide (or any slide missing media): pure dark layout
+  // TEXT slide (or any slide missing media): dark layout
   const pg = await browser.newPage();
   await pg.setViewport({ width: 1080, height: 1350, deviceScaleFactor: 1 });
-  await pg.setContent(buildSlideFromContent({
-    slide_type: slide_type || 'text', has_image: false,
-    headline, subheadline, body, bullets,
-    slide_number, total_slides, imageUrl: null,
+  await pg.setContent(buildAimaCarouselSlide({
+    imageUrl: null, headline, body, bullets, slide_number, total_slides, slide_type: 'text',
   }), { waitUntil: 'networkidle2', timeout: 15000 });
   const buf = await pg.screenshot({ type: 'jpeg', quality: 87, fullPage: false });
   await pg.close();
@@ -1517,6 +1514,94 @@ async function renderPexelsVideoSlide({ slide, browser }) {
     cleanup();
     throw e;
   }
+}
+
+// ── AIMABOOSTING Cover-style slide builder ─────────────────────────────────
+// All slides: full-bleed photo + gradient overlay + logo top-left + text bottom
+// Same visual style as @backpainlife carousel but with AIMABOOSTING branding
+let AIMA_LOGO_CYAN_B64 = '';
+try { AIMA_LOGO_CYAN_B64 = require('./aima_logo_cyan'); } catch(e) { console.warn('Logo not found:', e.message); }
+
+function buildAimaCarouselSlide({ imageUrl, headline, body, bullets, slide_number, total_slides, slide_type }) {
+  const safe = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const parseHl = text => safe(text).replace(/\[\[(.+?)\]\]/g, '<span class="kw">$1</span>');
+
+  const logoSrc = AIMA_LOGO_CYAN_B64
+    ? `data:image/png;base64,${AIMA_LOGO_CYAN_B64}`
+    : '';
+  const logoHtml = logoSrc
+    ? `<img class="logo" src="${logoSrc}" alt="AIMABOOSTING">`
+    : `<div class="logo-text">AIMA<span>BOOSTING</span></div>`;
+
+  const counter = `${slide_number}/${total_slides}`;
+  const isCover = slide_number === 1 || slide_type === 'cover';
+  const hasBullets = Array.isArray(bullets) && bullets.length > 0;
+
+  const fonts = `@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;900&display=swap');`;
+
+  // TEXT slide (no photo) — dark background
+  if (slide_type === 'text' || !imageUrl) {
+    const hlSize = (headline || '').length > 60 ? 52 : (headline || '').length > 40 ? 62 : 72;
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+  ${fonts}
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:1080px; height:1350px; overflow:hidden; background:#08090f; font-family:'Montserrat',Arial,sans-serif; }
+  .topbar { position:absolute; top:0; left:0; right:0; height:5px; background:linear-gradient(90deg,#00c8ff,#0070ff,#00c8ff); }
+  .counter { position:absolute; top:28px; right:36px; color:rgba(255,255,255,0.35); font-size:22px; font-weight:700; letter-spacing:0.06em; }
+  .logo { position:absolute; top:20px; left:36px; height:52px; width:auto; }
+  .logo-text { position:absolute; top:20px; left:36px; color:#fff; font-size:28px; font-weight:900; letter-spacing:-0.02em; }
+  .logo-text span { color:#00c8ff; }
+  .content { position:absolute; top:120px; left:60px; right:60px; bottom:80px; display:flex; flex-direction:column; justify-content:center; gap:28px; }
+  .accent { width:56px; height:5px; background:#00c8ff; border-radius:3px; }
+  .hl { color:#fff; font-size:${hlSize}px; font-weight:900; text-transform:uppercase; line-height:1.05; letter-spacing:0.5px; word-break:break-word; }
+  .hl .kw { color:#00c8ff; }
+  .bullets { list-style:none; display:flex; flex-direction:column; gap:20px; margin-top:8px; }
+  .bullets li { display:flex; align-items:flex-start; gap:18px; font-size:34px; font-weight:600; color:rgba(255,255,255,0.92); line-height:1.4; }
+  .bullets li::before { content:''; display:block; min-width:10px; height:10px; border-radius:50%; background:#00c8ff; margin-top:12px; flex-shrink:0; }
+  .bottombar { position:absolute; bottom:0; left:0; right:0; height:4px; background:linear-gradient(90deg,#00c8ff,#0070ff); }
+</style></head><body>
+  <div class="topbar"></div>
+  <div class="counter">${safe(counter)}</div>
+  ${logoHtml}
+  <div class="content">
+    <div class="accent"></div>
+    ${headline ? `<h2 class="hl">${parseHl(headline)}</h2>` : ''}
+    ${hasBullets ? `<ul class="bullets">${bullets.map(b => `<li>${safe(b)}</li>`).join('')}</ul>` : ''}
+  </div>
+  <div class="bottombar"></div>
+</body></html>`;
+  }
+
+  // PHOTO slide — full-bleed cover style
+  const hlSize = (headline || '').length > 60 ? 64 : (headline || '').length > 40 ? 76 : 88;
+  const bodySize = 30;
+
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+  ${fonts}
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:1080px; height:1350px; overflow:hidden; background:#000; font-family:'Montserrat',Arial,sans-serif; }
+  .bg { position:absolute; width:100%; height:100%; object-fit:cover; opacity:0.92; }
+  .overlay { position:absolute; inset:0; background:linear-gradient(to bottom, rgba(0,0,0,0.25) 0%, transparent 30%, transparent 45%, rgba(0,0,0,0.55) 62%, rgba(0,0,0,0.93) 78%, #000 92%); }
+  .logo { position:absolute; top:28px; left:36px; height:52px; width:auto; filter:drop-shadow(0 2px 6px rgba(0,0,0,0.8)); }
+  .logo-text { position:absolute; top:28px; left:36px; color:#fff; font-size:28px; font-weight:900; letter-spacing:-0.02em; text-shadow:0 2px 6px rgba(0,0,0,0.8); }
+  .logo-text span { color:#00c8ff; }
+  .counter { position:absolute; top:28px; right:36px; color:rgba(255,255,255,0.7); font-size:22px; font-weight:700; letter-spacing:0.06em; text-shadow:0 2px 4px rgba(0,0,0,0.9); }
+  .text-block { position:absolute; bottom:0; left:0; right:0; padding:0 52px 56px 52px; }
+  .hl { color:#fff; font-size:${hlSize}px; font-weight:900; text-transform:uppercase; line-height:1.0; letter-spacing:1px; word-break:break-word; text-shadow:2px 2px 8px rgba(0,0,0,0.9); }
+  .hl .kw { color:#00c8ff; }
+  .body-text { margin-top:18px; color:rgba(255,255,255,0.88); font-size:${bodySize}px; font-weight:600; line-height:1.55; text-shadow:1px 1px 4px rgba(0,0,0,0.9); }
+  .swipe { display:inline-block; margin-top:22px; color:#00c8ff; font-size:28px; font-weight:900; letter-spacing:4px; text-transform:uppercase; text-shadow:0 2px 4px rgba(0,0,0,0.8); }
+</style></head><body>
+  <img class="bg" src="${safe(imageUrl)}" crossorigin="anonymous">
+  <div class="overlay"></div>
+  ${logoHtml}
+  <div class="counter">${safe(counter)}</div>
+  <div class="text-block">
+    <div class="hl">${parseHl(headline || '')}</div>
+    ${body && !hasBullets ? `<div class="body-text">${safe(body)}</div>` : ''}
+    ${isCover ? '<div class="swipe">DESLIZA →</div>' : ''}
+  </div>
+</body></html>`;
 }
 
 const PORT = process.env.PORT || 3000;
